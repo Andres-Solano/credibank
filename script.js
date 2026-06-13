@@ -2076,105 +2076,143 @@ async function verDetalles({ id = null, clienteId = null, isHistory = false }) {
 
 // --- Renderizar los detalles de la solicitud ---
 function renderSolicitudDetalle(s, idx, userRole, isHistory) {
+
   let html = `
-  <div class="mb-6 p-4 border rounded bg-gray-50">
-    <h4 class="font-semibold mb-2">
-      Solicitud #${idx + 1} - ${obtenerNombreTipo(s.tipo)}
-    </h4>
+    <div class="mb-6 p-4 border rounded bg-gray-50">
+      <h4 class="font-semibold mb-2">
+        Solicitud #${idx + 1} - ${obtenerNombreTipo(s.tipo)}
+      </h4>
 
-    <p><b>ID:</b> ${s.id}</p>
-    <p><b>Fecha:</b> ${formatDate(s.fecha)}</p>
-    <p><b>Cambiado por:</b> ${s.cambiadopor || "N/A"}</p>
-    ${isHistory ? `<p><b>Finalizado:</b> ${formatDate(s.fechacompletado)}</p>` : ""}
+      <p><b>ID:</b> ${s.id}</p>
+      <p><b>Fecha:</b> ${formatDate(s.fecha)}</p>
+      <p><b>Cambiado por:</b> ${s.cambiadopor || "N/A"}</p>
+
+      ${
+        isHistory
+          ? `<p><b>Finalizado:</b> ${formatDate(s.fechacompletado)}</p>`
+          : ""
+      }
   `;
-``
 
-  // 🔹 Mostrar y actualizar estado general de la solicitud
-if (!isHistory && ["admin","operativo"].includes(userRole)) {
+  // 🔹 Estado
+  if (!isHistory && ["admin", "operativo"].includes(userRole)) {
+
     html += `
-      <select id="estado-select-${s.id}">
-        <option ${s.estado==="Pendiente"?"selected":""}>Pendiente</option>
-        <option ${s.estado==="Realizado"?"selected":""}>Realizado</option>
-      </select>
+      <div class="my-2">
+        <select id="estado-select-${s.id}">
+          <option ${
+            s.estado === "Pendiente" ? "selected" : ""
+          }>
+            Pendiente
+          </option>
 
-      <button id="update-status-button-${s.id}">
-        Actualizar
-      </button>
+          <option ${
+            s.estado === "Realizado" ? "selected" : ""
+          }>
+            Realizado
+          </option>
+        </select>
+
+        <button id="update-status-button-${s.id}">
+          Actualizar
+        </button>
+      </div>
     `;
+
   } else {
+
     html += `<p><b>Estado:</b> ${s.estado}</p>`;
   }
-``
-
- // html += `<hr class="my-2">`;
 
   // 🔹 Observaciones
   html += `
-    <div>
+    <div class="mt-3 mb-3">
       <label>Observaciones</label>
-      <textarea id="edit-observaciones-${s.id}"
-        ${!["admin","operativo"].includes(userRole) ? "readonly":""}>
-        ${s.observaciones || ""}
-      </textarea>
+
+      <textarea
+        id="edit-observaciones-${s.id}"
+        ${!["admin", "operativo"].includes(userRole) ? "readonly" : ""}
+      >${s.observaciones || ""}</textarea>
     </div>
   `;
-  
+
+  // 🔹 Campos de la solicitud
   if (s.datos) {
+
     Object.entries(s.datos).forEach(([k, v]) => {
 
       let valor = v ?? "-";
 
-      if ([
-        "valor-credito","valor-vivienda",
-        "ingreso-principal","otros-ingresos",
-        "valor-inmueble","valor-activos"
-      ].includes(k)) {
+      // Campos moneda
+      if (
+        [
+          "valor-credito",
+          "valor-vivienda",
+          "ingreso-principal",
+          "otros-ingresos",
+          "valor-inmueble",
+          "valor-activos"
+        ].includes(k)
+      ) {
         valor = valor === "-" ? "-" : formatCurrency(valor);
       }
 
-      html += renderCampo(k, valor, s.id, userRole, isHistory);
-    });
-  }
+      // Estado del asesor con color
+      if (k.toLowerCase().includes("estado-asesor")) {
 
-      // 🔸 Mostrar el estado del asesor con el mismo formato visual que los demás campos
-      if (key.toLowerCase().includes("estado-asesor")) {
         let colorClass = "text-gray-700";
-        if (valor.toLowerCase() === "activo") colorClass = "text-green-600";
-        else if (valor.toLowerCase().includes("sin vinc"))
+
+        const estado = String(valor).toLowerCase();
+
+        if (estado === "activo") {
+          colorClass = "text-green-600";
+        } else if (estado.includes("sin vinc")) {
           colorClass = "text-yellow-600";
-        else if (valor.toLowerCase() === "inactivo")
+        } else if (estado === "inactivo") {
           colorClass = "text-red-600";
+        }
 
         html += `
           <div class="mb-2">
             <label class="block text-gray-700 text-sm font-bold mb-1">
-              ${formatearNombreCampo(key)}:
+              ${formatearNombreCampo(k)}:
             </label>
-            <input type="text"
+
+            <input
+              type="text"
               class="shadow border rounded w-full py-2 px-3 font-semibold ${colorClass} bg-gray-50"
               value="${valor}"
               readonly
             >
           </div>
         `;
+
       } else {
+
         html += renderCampo(
-          key,
+          k,
           valor,
-          solicitud.id,
+          s.id,
           userRole,
-          solicitud.tipo,
           isHistory
         );
-    }
-  });
+      }
 
-  // 🔹 Botón de guardar
-  if (["admin","operativo"].includes(userRole)) {
-    html += `<button id="save-details-button-${s.id}">Guardar</button>`;
+    });
   }
 
-  return html + `</div>`;
+  // 🔹 Guardar
+  if (["admin", "operativo"].includes(userRole)) {
+    html += `
+      <button id="save-details-button-${s.id}">
+        Guardar
+      </button>
+    `;
+  }
+
+  html += `</div>`;
+
+  return html;
 }
 
 function renderCampo(key, value, id, role, isHistory) {
