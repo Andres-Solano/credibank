@@ -117,12 +117,7 @@ async function __loadJSON(url) {
 const __tabState = {
   perfilamiento: { loaded: false, ts: 0, inFlight: null },
   radicacion: { loaded: false, ts: 0, inFlight: null },
-  "trabaja-nosotros": { loaded: false, ts: 0, inFlight: null },
-  historial: { loaded: false, ts: 0, inFlight: null },
-  creditos: { loaded: false, ts: 0, inFlight: null },
-  comisiones: { loaded: false, ts: 0, inFlight: null },
   asesores: { loaded: false, ts: 0, inFlight: null },
-  "fichas-cuentas": { loaded: false, ts: 0, inFlight: null },
 };
 
 const __TAB_TTL_MS = 60_000;
@@ -160,29 +155,8 @@ async function ensureTabData(tabId, { force = false } = {}) {
       case "radicacion":
         await cargarRadicacion();
         break;
-      case "trabaja-nosotros":
-        await cargarTrabajaNosotros();
-        break;
-      case "historial":
-        await cargarHistorial();
-        break;
-      case "creditos":
-        await cargarCreditos();
-        break;
-      case "comisiones":
-        await cargarComisiones();
-        volverAVistaComisiones();
-        break;
       case "asesores":
         await cargarAsesores();
-        break;
-      case "fichas-cuentas":
-        await Promise.all([
-          (typeof verFichasComerciales === "function") ? verFichasComerciales("admin") : Promise.resolve(),
-          (typeof verCuentasCobroAdmin === "function") ? verCuentasCobroAdmin() : Promise.resolve(),
-        ]);
-        break;
-      default:
         break;
     }
 
@@ -946,18 +920,21 @@ function normalizarCreditoSegunReglaLibranza(credito = {}) {
   return normalizado;
 }
 
-// --- Guardar Solicitud en Supabase (con validación de duplicados) ---
+
+// --- Guardar Solicitud en Supabase (SIN trabaja-nosotros) ---
 async function guardarSolicitud(tipo, formData, form = null) {
-  // ✅ Captura la hora apenas el usuario envía la solicitud
+
   const fechaSolicitud = new Date().toISOString();
 
   const allFormData = {};
   let nombre = "N/A",
-    documento = "N/A",
-    monto = "0",
-    email = "N/A";
+      documento = "N/A",
+      monto = 0,
+      email = "N/A";
 
   for (const [key, value] of formData.entries()) {
+
+    // 📁 ARCHIVOS
     if (value instanceof File) {
       try {
         const safeFileName = value.name
@@ -978,12 +955,16 @@ async function guardarSolicitud(tipo, formData, form = null) {
           .getPublicUrl(filePath);
 
         allFormData[key] = publicData.publicUrl;
+
       } catch (error) {
         console.error(`Error al subir archivo ${value.name}:`, error);
         allFormData[key] = `[Error al subir: ${value.name}]`;
         mostrarMensaje(form, "error", `Error al subir el archivo ${value.name}.`);
       }
+
     } else {
+
+      // SELECTS
       if (selectOptions[key]) {
         allFormData[key] = value
           .toLowerCase()
@@ -991,43 +972,53 @@ async function guardarSolicitud(tipo, formData, form = null) {
           .normalize("NFD")
           .replace(/[\u0300-\u036f]/g, "")
           .replace(/\//g, "");
-      } else if (
-        typeof value === "string" &&
-        !["email", "radicacion-correo-electronico"].includes(key)
-      ) {
-        allFormData[key] = value;
-      } else if (
-        [
-          "valor-credito",
-          "valor-vivienda",
-          "ingreso-principal",
-          "otros-ingresos",
-          "valor-inmueble",
-          "valor-activos",
-        ].includes(key)
-      ) {
+
+      }
+      // NUMÉRICOS
+      else if ([
+        "valor-credito",
+        "valor-vivienda",
+        "ingreso-principal",
+        "otros-ingresos",
+        "valor-inmueble",
+        "valor-activos"
+      ].includes(key)) {
         allFormData[key] = parseFloat(value) || 0;
-      } else {
+
+      }
+      // TEXTO
+      else {
         allFormData[key] = value;
       }
     }
   }
 
-  if (tipo === "trabaja-nosotros") {
-    nombre = allFormData["nombre"] || "N/A";
-    email = allFormData["email"] || "N/A";
-    documento = allFormData["cedula-trabaja"] || "N/A";
-  } else if (tipo === "radicacion") {
-    nombre = `${allFormData["radicacion-apellido1"] || ""} ${allFormData["radicacion-apellido2"] || ""} ${allFormData["radicacion-nombre1"] || ""} ${allFormData["radicacion-nombre2"] || ""}`.trim();
+  // ✅ RADICACIÓN
+  if (tipo === "radicacion") {
+
+    nombre = `${allFormData["radicacion-apellido1"] || ""} 
+              ${allFormData["radicacion-apellido2"] || ""} 
+              ${allFormData["radicacion-nombre1"] || ""} 
+              ${allFormData["radicacion-nombre2"] || ""}`.trim();
+
     documento = allFormData["cedula-radicacion"] || "N/A";
     email = allFormData["radicacion-correo-electronico"] || "N/A";
-  } else {
-    nombre = `${allFormData["apellido1"] || ""} ${allFormData["apellido2"] || ""} ${allFormData["nombre1"] || ""} ${allFormData["nombre2"] || ""}`.trim();
+
+  } 
+  // ✅ PERFILAMIENTO
+  else {
+
+    nombre = `${allFormData["apellido1"] || ""} 
+              ${allFormData["apellido2"] || ""} 
+              ${allFormData["nombre1"] || ""} 
+              ${allFormData["nombre2"] || ""}`.trim();
+
     documento = allFormData["cedula-cliente"] || "N/A";
     monto = allFormData["valor-credito"] || 0;
     email = allFormData["email"] || "N/A";
   }
 
+  // ✅ VALIDAR DUPLICADOS
   const { data: existente, error: checkError } = await supabaseClient
     .from("solicitudes")
     .select("id")
@@ -1035,19 +1026,18 @@ async function guardarSolicitud(tipo, formData, form = null) {
     .eq("tipo", tipo)
     .maybeSingle();
 
-  if (checkError) return mostrarMensaje(form, "error", "Error verificando duplicados.");
-
-  if (existente) {
-    return mostrarMensaje(
-      form,
-      "error",
-      "⚠️ Ya existe una solicitud con este documento."
-    );
+  if (checkError) {
+    return mostrarMensaje(form, "error", "Error verificando duplicados.");
   }
 
+  if (existente) {
+    return mostrarMensaje(form, "error", "⚠️ Ya existe una solicitud para este cliente.");
+  }
+
+  // ✅ OBJETO FINAL
   const nuevaSolicitud = {
     tipo,
-    fecha: fechaSolicitud, // ✅ usa la hora real del envío
+    fecha: fechaSolicitud,
     nombre,
     documento,
     monto,
@@ -1055,7 +1045,7 @@ async function guardarSolicitud(tipo, formData, form = null) {
     datos: allFormData,
     estado: "Pendiente",
     observaciones: "",
-    cambiadopor: "",
+    cambiadopor: ""
   };
 
   try {
@@ -1069,161 +1059,96 @@ async function guardarSolicitud(tipo, formData, form = null) {
 
     mostrarMensaje(form, "exito", "✅ Solicitud enviada correctamente.");
     return data;
+
   } catch (e) {
     console.error("Error guardando solicitud:", e);
-    mostrarMensaje(form, "error", "Error enviando la solicitud.");
+    mostrarMensaje(form, "error", "❌ Error enviando la solicitud.");
     return null;
   }
 }
 
+
 async function cambiarEstado(id, nuevoEstado) {
+
   const userRole = getUserRole();
   const userName = getUserName();
 
-  // Verificar permisos
+  // ✅ PERMISOS
   if (userRole !== "admin" && userRole !== "operativo") {
-    mostrarMensaje(
-      null,
-      "error",
-      "No tienes permiso para cambiar el estado de las solicitudes."
-    );
-    return;
+    return mostrarMensaje(null, "error", "No tienes permisos.");
   }
 
   if (!id || !nuevoEstado) {
-    mostrarMensaje(null, "error", "ID o estado inválido.");
-    return;
+    return mostrarMensaje(null, "error", "Datos inválidos.");
   }
 
   try {
-    const { data: solicitud, error: getError } = await supabaseClient
+    const { data: solicitud, error } = await supabaseClient
       .from("solicitudes")
       .select("*")
       .eq("id", id)
       .single();
 
-    if (getError || !solicitud) {
-      mostrarMensaje(null, "error", "Solicitud no encontrada.");
-      return;
+    if (error || !solicitud) {
+      return mostrarMensaje(null, "error", "Solicitud no encontrada.");
     }
 
-    if (nuevoEstado === "Realizado" && solicitud.tipo !== "trabaja-nosotros") {
-      // 1. Buscar si ya existe una solicitud del mismo tipo y documento en historial_clientes
-      const { data: oldHistoryEntry, error: searchHistError } = await supabaseClient
+    // ✅ SI SE COMPLETA → PASA A HISTORIAL
+    if (nuevoEstado === "Realizado") {
+
+      // eliminar duplicado en historial
+      await supabaseClient
         .from("historial_clientes")
-        .select("id")
+        .delete()
         .eq("documento", solicitud.documento)
-        .eq("tipo", solicitud.tipo)
-        .maybeSingle();
+        .eq("tipo", solicitud.tipo);
 
-      if (searchHistError) {
-        console.error(
-          "Error buscando entrada antigua en historial:",
-          searchHistError
-        );
-      }
-
-      // 2. Si se encuentra una entrada antigua, eliminarla
-      if (oldHistoryEntry) {
-        const { error: deleteOldHistError } = await supabaseClient
-          .from("historial_clientes")
-          .delete()
-          .eq("id", oldHistoryEntry.id);
-
-        if (deleteOldHistError) {
-          console.error(
-            "Error eliminando entrada antigua del historial:",
-            deleteOldHistError
-          );
-          mostrarMensaje(
-            null,
-            "error",
-            `Error al eliminar entrada antigua del historial: ${deleteOldHistError.message}`
-          );
-          return;
-        }
-        console.log(
-          `Entrada antigua de historial (ID: ${oldHistoryEntry.id}) eliminada para ser reemplazada.`
-        );
-      }
-
-      // 3. Insertar la nueva solicitud en historial_clientes
+      // insertar en historial
       const { error: histError } = await supabaseClient
         .from("historial_clientes")
-        .insert([
-          {
-            tipo: solicitud.tipo,
-            fecha: solicitud.fecha,
-            nombre: solicitud.nombre,
-            documento: solicitud.documento,
-            monto: solicitud.monto,
-            email: solicitud.email,
-            datos: solicitud.datos,
-            estado: nuevoEstado,
-            observaciones: solicitud.observaciones || "",
-            cambiadopor: userName,
-            fechacompletado: new Date().toISOString(),
-          },
-        ]);
+        .insert([{
+          ...solicitud,
+          estado: nuevoEstado,
+          cambiadopor: userName,
+          fechacompletado: new Date().toISOString()
+        }]);
 
       if (histError) {
-        console.error("Error al mover a historial:", histError);
-        mostrarMensaje(
-          null,
-          "error",
-          `Error al mover a historial: ${histError.message}`
-        );
-        return;
+        return mostrarMensaje(null, "error", histError.message);
       }
 
-      const { error: deleteError } = await supabaseClient
+      // eliminar original
+      await supabaseClient
         .from("solicitudes")
         .delete()
         .eq("id", id);
 
-      if (deleteError) {
-        console.error("Error al eliminar solicitud:", deleteError);
-        mostrarMensaje(
-          null,
-          "error",
-          `Error al eliminar solicitud: ${deleteError.message}`
-        );
-        return;
-      }
+      mostrarMensaje(null, "exito", "✅ Movido a historial");
 
-      mostrarMensaje(
-        null,
-        "exito",
-        "✅ Solicitud movida a historial correctamente."
-      );
     } else {
-      // Solo actualizar estado
-      const { error: updateError } = await supabaseClient
+
+      // ✅ SOLO CAMBIAR ESTADO
+      const { error } = await supabaseClient
         .from("solicitudes")
-        .update({ estado: nuevoEstado, cambiadopor: userName })
+        .update({
+          estado: nuevoEstado,
+          cambiadopor: userName
+        })
         .eq("id", id);
 
-      if (updateError) {
-        console.error("Error al actualizar estado:", updateError);
-        mostrarMensaje(
-          null,
-          "error",
-          `Error al actualizar estado: ${updateError.message}`
-        );
-        return;
+      if (error) {
+        return mostrarMensaje(null, "error", error.message);
       }
 
-      mostrarMensaje(null, "exito", "✅ Estado actualizado correctamente.");
+      mostrarMensaje(null, "exito", "✅ Estado actualizado");
     }
+
   } catch (e) {
-    console.error("Error cambiando estado:", e);
-    mostrarMensaje(
-      null,
-      "error",
-      `Hubo un error al cambiar el estado: ${e.message || JSON.stringify(e)}`
-    );
+    console.error(e);
+    mostrarMensaje(null, "error", "Error interno");
   }
 }
+
 
 // Orden de campos para cada tipo de formulario
 // --- Definición de ordenCampos ---
@@ -1417,18 +1342,7 @@ const ordenCampos = {
     "cedula-beneficiario",
     "parentesco-beneficiario",
   ],
-  "trabaja-nosotros": [
-    "cedula-trabaja",
-    "nombre",
-    "email",
-    "telefono",
-    "ciudad",
-    "hv",
-    "certificado",
-    "rut",
-    "cedula",
-    "mensaje",
-  ],
+  
 };
 
 // --- Combinar todos los campos ordenados en una sola lista para el renderizado de detalles ---
@@ -1735,306 +1649,6 @@ async function cargarRadicacion() {
     contadorId: "contador-radicacion",
     renderContext: "radicacion",
   });
-}
-
-// 📊 TRABAJA CON NOSOTROS
-async function cargarTrabajaNosotros() {
-  return cargarSolicitudesTabla({
-    queryBuilder: supabaseClient
-      .from("solicitudes")
-      .select("*")
-      .eq("tipo", "trabaja-nosotros")
-      .order("fecha", { ascending: false }),
-    tbodyId: "solicitudes-table-body-trabaja-nosotros",
-    emptyId: "no-solicitudes-trabaja-nosotros",
-    contadorId: "contador-trabaja-nosotros",
-    renderContext: "trabaja-nosotros",
-  });
-}
-
-async function cargarHistorial() {
-
-  // Pedimos conteo EXACTO
-  const { data, count, error } = await supabaseClient
-    .from("historial_clientes")
-    .select("*", { count: "exact" })
-    .order("fecha", { ascending: false });
-
-  const tbody = $("solicitudes-table-body-historial");
-  const noHistorial = $("no-solicitudes-historial");
-  const contador = $("contador-historial");
-
-  if (error) {
-    console.error("Error cargando historial:", error);
-    if (contador) contador.textContent = "(0)";
-    return;
-  }
-
-  if (!data || data.length === 0) {
-    tbody.innerHTML = "";
-    noHistorial.classList.remove("hidden");
-    if (contador) contador.textContent = "(0)";
-  } else {
-
-    // 🔥 Fijamos el contador con el número REAL
-    if (contador) contador.textContent = `(${count})`;
-
-    noHistorial.classList.add("hidden");
-
-    // 🔽 --- Tu lógica original intacta, sólo cambié el contador ---
-    const clientesMap = new Map();
-
-    data.forEach((solicitud) => {
-      const clienteId = solicitud.documento || solicitud.email || "sin-id";
-
-      if (!clientesMap.has(clienteId)) {
-        clientesMap.set(clienteId, {
-          clienteId,
-          nombre: solicitud.nombre || "N/A",
-          documentos: new Set(),
-          emails: new Set(),
-          tipos: new Set(),
-          estados: new Set(),
-          fechasSolicitud: [],
-          fechasCompletado: [],
-        });
-      }
-
-      const cliente = clientesMap.get(clienteId);
-
-      if (solicitud.documento) cliente.documentos.add(solicitud.documento);
-      if (solicitud.email) cliente.emails.add(solicitud.email);
-
-      cliente.tipos.add(obtenerNombreTipo(solicitud.tipo));
-      cliente.estados.add(solicitud.estado);
-      cliente.fechasSolicitud.push(solicitud.fecha);
-      cliente.fechasCompletado.push(solicitud.fechacompletado || "");
-    });
-
-    const clientesArray = Array.from(clientesMap.values());
-
-    tbody.innerHTML = clientesArray
-      .map((cliente) => {
-        const documentosStr = Array.from(cliente.documentos).join(", ");
-        const emailsStr = Array.from(cliente.emails).join(", ");
-        const tiposStr = Array.from(cliente.tipos).join(", ");
-
-        const fechasSolicitudValidas = cliente.fechasSolicitud
-          .filter((f) => f)
-          .map((f) => new Date(f).getTime());
-
-        const fechasCompletadoValidas = cliente.fechasCompletado
-          .filter((f) => f)
-          .map((f) => new Date(f).getTime());
-
-        const fechaSolicitudMin =
-          fechasSolicitudValidas.length > 0
-            ? new Date(Math.min(...fechasSolicitudValidas))
-            : null;
-
-        const fechaCompletadoMax =
-          fechasCompletadoValidas.length > 0
-            ? new Date(Math.max(...fechasCompletadoValidas))
-            : null;
-
-        const estadoStr =
-          cliente.estados.size === 1 ? Array.from(cliente.estados)[0] : "Mixto";
-
-        return `
-        <tr>
-          <td class="px-6 py-4 text-sm">${formatDate(fechaSolicitudMin)}</td>
-          <td class="px-6 py-4 text-sm">${tiposStr}</td>
-          <td class="px-6 py-4 text-sm whitespace-nowrap">${cliente.nombre}</td>
-          <td class="px-6 py-4 text-sm">${documentosStr || emailsStr || "N/A"}</td>
-          <td class="px-6 py-4 text-sm">${formatDate(fechaCompletadoMax)}</td>
-          <td class="px-6 py-4 text-sm">${estadoStr}</td>
-          <td class="px-6 py-4 text-sm flex gap-2">
-            <button onclick="verDetalles({ clienteId: '${cliente.clienteId}', isHistory: true })"
-              class="text-blue-600 hover:text-blue-900">
-              <i class="fas fa-eye"></i> Ver
-            </button>
-            <button onclick="descargarPDFCliente('${cliente.clienteId}')"
-              class="text-red-600 hover:text-red-900">
-              <i class="fas fa-file-pdf"></i> PDF
-            </button>
-          </td>
-        </tr>`;
-      })
-      .join("");
-  }
-}
-
-async function descargarPDFCliente(clienteId) {
-  try {
-    const { data, error } = await supabaseClient
-      .from("historial_clientes")
-      .select("*")
-      .or(`documento.eq.${clienteId},email.eq.${clienteId}`)
-      .order("fecha", { ascending: true });
-
-    if (error || !data || data.length === 0) {
-      mostrarMensaje(
-        null,
-        "error",
-        "No se encontraron datos para este cliente."
-      );
-      return;
-    }
-
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({
-      orientation: "portrait",
-      unit: "mm",
-      format: "a4",
-    });
-
-    // === Colores corporativos ===
-    const verde = [59, 191, 93];
-    const azul = [0, 136, 198];
-
-    // === Encabezado ===
-    const logoUrl =
-      "https://ychkekvylldsbkqlcfid.supabase.co/storage/v1/object/public/archivos/logo.png";
-    doc.setFillColor(azul[0], azul[1], azul[2]);
-    doc.rect(0, 0, 210, 25, "F");
-
-    try {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.src = logoUrl;
-      doc.addImage(img, "PNG", 10, 3, 25, 18);
-    } catch (err) {
-      console.warn("⚠️ No se pudo cargar el logo:", err);
-    }
-
-    doc.setTextColor(255, 255, 255);
-    doc.setFontSize(18);
-    doc.text("CREDIBANK GRUPO FINANCIERO", 40, 15);
-
-    // === DATOS DEL CLIENTE ===
-    const cliente = data[0];
-    let y = 40;
-    doc.setTextColor(verde[0], verde[1], verde[2]);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(13);
-    doc.text("Datos del Cliente", 14, y);
-    y += 8;
-
-    const datosPrincipales = [
-      ["Nombre", cliente.nombre || "N/A"],
-      ["Documento", cliente.documento || "N/A"],
-      ["Correo", cliente.email || "N/A"],
-      ["Último Estado", data[data.length - 1]?.estado || "N/A"],
-      [
-        "Última Actualización",
-        formatDate(data[data.length - 1]?.fechacompletado),
-      ],
-    ];
-
-    doc.setFontSize(10);
-    doc.setTextColor(0, 0, 0);
-    datosPrincipales.forEach(([campo, valor]) => {
-      if (y > 270) {
-        doc.addPage();
-        y = 20;
-      }
-      doc.setFont("helvetica", "bold");
-      doc.text(`${campo}:`, 14, y);
-      doc.setFont("helvetica", "normal");
-      const textLines = doc.splitTextToSize(String(valor), 130);
-      doc.text(textLines, 60, y);
-      y += textLines.length * 6;
-    });
-
-    // Línea separadora
-    y += 4;
-    doc.setDrawColor(azul[0], azul[1], azul[2]);
-    doc.line(14, y, 196, y);
-    y += 10;
-
-    // === DATOS CONSOLIDADOS (jsonb) ===
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(12);
-    doc.setTextColor(verde[0], verde[1], verde[2]);
-    doc.text("Datos Consolidados", 14, y);
-    y += 8;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
-    doc.setTextColor(0, 0, 0);
-
-    // 🔹 Combinar todos los JSONB en un solo objeto sin duplicados
-    const mergedDatos = {};
-    data.forEach((registro) => {
-      if (!registro.datos) return;
-      let parsed = registro.datos;
-      if (typeof parsed === "string") {
-        try {
-          parsed = JSON.parse(parsed);
-        } catch (e) {
-          console.warn("⚠️ No se pudo parsear JSON:", registro.datos);
-        }
-      }
-      if (typeof parsed === "object") {
-        Object.entries(parsed).forEach(([key, value]) => {
-          if (value !== null && value !== "" && value !== undefined)
-            mergedDatos[key] = value;
-        });
-      }
-    });
-
-    const keys = Object.keys(mergedDatos);
-    if (keys.length === 0) {
-      doc.text("Sin datos adicionales registrados.", 14, y);
-      y += 10;
-    } else {
-      const colClaveWidth = 80;
-      const colValorWidth = 100;
-
-      keys.forEach((k, index) => {
-        if (y > 265) {
-          doc.addPage();
-          y = 20;
-        }
-
-        // Fondo alternado
-        if (index % 2 === 0) {
-          doc.setFillColor(245, 245, 245);
-          doc.rect(14, y - 4, 182, 8, "F");
-        }
-
-        // Clave y valor
-        const clave = String(k).replace(/\s+/g, " ").trim();
-        const valor = String(mergedDatos[k]);
-
-        const claveLines = doc.splitTextToSize(clave, colClaveWidth);
-        const valorLines = doc.splitTextToSize(valor, colValorWidth);
-
-        const rowHeight =
-          Math.max(claveLines.length, valorLines.length) * 5 + 3;
-
-        doc.setFont("helvetica", "bold");
-        doc.text(claveLines, 16, y + 2);
-        doc.setFont("helvetica", "normal");
-        doc.text(valorLines, 16 + colClaveWidth + 5, y + 2);
-
-        y += rowHeight;
-      });
-    }
-
-    // === PIE DE PÁGINA ===
-    const fechaActual = new Date().toLocaleString("es-CO");
-    doc.setFontSize(9);
-    doc.setTextColor(100);
-    doc.text(`Generado el ${fechaActual}`, 14, 285);
-    doc.text("© CREDIBANK Grupo Financiero", 150, 285);
-
-    // === GUARDAR ===
-    doc.save(`Datos_${cliente.nombre || clienteId}.pdf`);
-  } catch (e) {
-    console.error(e);
-    mostrarMensaje(null, "error", "Error generando el PDF.");
-  }
 }
 
 // 📄 Generar PDF de PERFILAMIENTO con diseño corporativo
@@ -2382,803 +1996,6 @@ async function descargarPDFRadicacion(idSolicitud) {
   }
 }
 
-// --- CRUD Créditos Radicados --- (versiones corregidas)
-
-// ✅ Crear nuevo crédito (contentType + lazy reload correcto)
-async function guardarCredito(formData) {
-  try {
-    const nuevoCredito = {};
-    const archivos = ["autorizacion-consulta", "llamadas", "vobo-cliente"];
-    const esDigital = $("autorizacion-digital")?.checked;
-
-    // ✅ Edad (si viene vacía -> null)
-    const edadRaw = formData.get("edad");
-    const edad = parseInt(edadRaw, 10);
-    nuevoCredito.edad = Number.isFinite(edad) ? edad : null;
-
-    // ✅ Subir archivos (si aplica)
-    for (const nombreCampo of archivos) {
-      const archivo = formData.get(nombreCampo);
-      const key = nombreCampo.replace(/-/g, "_");
-
-      // Autorización digital no sube archivo
-      if (nombreCampo === "autorizacion-consulta" && esDigital) {
-        nuevoCredito[key] = "Digital";
-        continue;
-      }
-
-      // Si no hay archivo válido
-      if (!(archivo instanceof File) || !archivo.name) {
-        nuevoCredito[key] = null;
-        continue;
-      }
-
-      try {
-        const safeName = archivo.name
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .replace(/[^a-zA-Z0-9._-]/g, "_");
-
-        const path = `creditos_radicados/${Date.now()}_${safeName}`;
-
-        const { error: uploadError } = await supabaseClient.storage
-          .from("archivos")
-          .upload(path, archivo, {
-            cacheControl: "3600",
-            upsert: true,
-            contentType: archivo.type || "application/octet-stream",
-          });
-
-        if (uploadError) throw uploadError;
-
-        const { data: publicData } = supabaseClient.storage
-          .from("archivos")
-          .getPublicUrl(path);
-
-        nuevoCredito[key] = publicData?.publicUrl ?? null;
-      } catch (err) {
-        console.error(`Error subiendo ${nombreCampo}:`, err);
-        nuevoCredito[key] = null;
-      }
-    }
-
-    // ✅ Campos que NO deberían convertirse a número (para no perder ceros o precisión)
-    const noConvertirANumero = new Set([
-      "telefono",
-      "cedula",
-      "cedula_cliente",
-      "numero_credito",
-      "n_credito",
-      "nit",
-    ]);
-
-    // ✅ Copiar el resto del formData al objeto
-    formData.forEach((valor, clave) => {
-      if (archivos.includes(clave)) return;
-
-      const key = clave.replace(/-/g, "_");
-
-      // Normaliza vacíos
-      if (valor === "" || valor === "{}" || valor === "null" || valor == null) {
-        nuevoCredito[key] = null;
-        return;
-      }
-
-      // Si es string numérico y no está en la lista de “no convertir”
-      if (typeof valor === "string" && !noConvertirANumero.has(clave)) {
-        const n = Number(valor);
-        if (Number.isFinite(n) && valor.trim() !== "") {
-          nuevoCredito[key] = n;
-          return;
-        }
-      }
-
-      nuevoCredito[key] = valor;
-    });
-
-    Object.assign(nuevoCredito, normalizarCreditoSegunReglaLibranza(nuevoCredito));
-
-    const { data, error } = await supabaseClient
-      .from("creditos_radicados")
-      .insert([nuevoCredito])
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    mostrarMensaje(null, "exito", "✅ Crédito guardado correctamente.");
-
-    // ✅ Lazy reload: invalida y recarga solo si estás en la pestaña de créditos
-    invalidateTab("creditos");
-    if (typeof __getActiveAdminTabId === "function" && __getActiveAdminTabId() === "creditos") {
-      await ensureTabData("creditos", { force: true });
-    }
-
-    return data;
-  } catch (error) {
-    console.error("⚠️ Error inesperado al guardar crédito:", error);
-    mostrarMensaje(null, "error", "⚠️ Error al guardar crédito.");
-    return null;
-  }
-}
-
-async function traerCreditosTodos() {
-  const PAGE = 1000;
-  let from = 0;
-  const all = [];
-
-  while (true) {
-    const { data, error } = await supabaseClient
-      .from("creditos_radicados")
-      .select("*")
-      .order("fecha_consulta", { ascending: false })
-      .range(from, from + PAGE - 1);
-
-    if (error) throw error;
-    if (!data || data.length === 0) break;
-
-    all.push(...data);
-    if (data.length < PAGE) break;
-    from += PAGE;
-  }
-
-  return all;
-}
-
-async function cargarCreditos() {
-  const [{ count, error: countError }, creditosRes] = await Promise.all([
-    supabaseClient
-      .from("creditos_radicados")
-      .select("id", { count: "exact", head: true }),
-    traerCreditosTodos().then(data => ({ data })).catch(error => ({ error }))
-  ]);
-
-  if (countError) console.error("Error contando créditos:", countError);
-
-  const { data, error } = creditosRes;
-
-  const tbody = $("solicitudes-table-body-creditos");
-  const noSolicitudes = $("no-solicitudes-creditos");
-  const contador = $("contador-creditos");
-  const tabla = tbody.closest("table");
-
-  if (error) {
-    console.error("Error cargando créditos:", error);
-    if (contador) contador.textContent = "(0)";
-    return;
-  }
-
-  if (!data || data.length === 0) {
-    tbody.innerHTML = "";
-    noSolicitudes.classList.remove("hidden");
-    if (contador) contador.textContent = "(0)";
-    const tfoot = tabla.querySelector("tfoot");
-    if (tfoot) tfoot.remove();
-    return;
-  }
-
-  noSolicitudes.classList.add("hidden");
-  tbody.innerHTML = data.map((c) => renderFilaCredito(c)).join("");
-
-  // ✅ total real
-  if (contador) contador.textContent = `(${count ?? data.length})`;
-
-  actualizarTotalesCreditos();
-}
-
-// ============================================================
-// ✏️ EDITAR Y ACTUALIZAR CRÉDITO — Optimizado sin recargas
-// ============================================================
-
-let creditoEditando = null; // Estado global para saber si estamos editando
-
-// ✅ EDITAR CRÉDITO — carga datos y archivos en el formulario
-async function editarCredito(id) {
-  if (!id) {
-    mostrarMensaje(
-      null,
-      "error",
-      "❌ No se ha especificado un crédito válido."
-    );
-    return;
-  }
-
-  const { data, error } = await supabaseClient
-    .from("creditos_radicados")
-    .select("*")
-    .eq("id", id)
-    .single();
-
-  if (error || !data) {
-    console.error("❌ Error cargando crédito:", error || "No data");
-    mostrarMensaje(null, "error", "❌ No se pudo cargar el crédito.");
-    return;
-  }
-
-  creditoEditando = id;
-  const form = $("creditos-form");
-  if (!form) return;
-
-  const camposArchivo = ["autorizacion-consulta", "llamadas", "vobo-cliente"];
-
-  Object.keys(data).forEach((key) => {
-    const inputName = key.replace(/_/g, "-");
-    const input = form.querySelector(`[name="${inputName}"]`);
-    if (!input) return;
-
-    const value = data[key] ?? "";
-
-    // 📁 Campos de archivo
-    if (input.type === "file") {
-      input.value = "";
-      const label = input.parentElement.querySelector("label");
-      if (!label) return;
-
-      // Limpiar etiquetas previas
-      label
-        .querySelectorAll("a[href^='http'], span.text-green-600")
-        .forEach((el) => el.remove());
-
-      // Mostrar estado actual
-      if (typeof value === "string") {
-        if (value === "Digital") {
-          const span = document.createElement("span");
-          span.textContent = "📄 Digital";
-          span.className = "text-green-600 font-semibold ml-2";
-          label.appendChild(span);
-        } else if (value.startsWith("http")) {
-          const link = document.createElement("a");
-          link.href = value;
-          link.target = "_blank";
-          link.textContent = value.endsWith(".pdf")
-            ? "📄 Ver documento"
-            : "🎧 Escuchar audio";
-          link.className = "text-blue-600 underline ml-2";
-          label.appendChild(link);
-        }
-      }
-      return;
-    }
-
-    // 📋 Selects o campos normales
-    if (input.tagName === "SELECT") {
-      const normalized = (v) =>
-        String(v || "")
-          .trim()
-          .toLowerCase()
-          .replace(/ /g, "-")
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "");
-      const option = Array.from(input.options).find(
-        (opt) =>
-          normalized(opt.value) === normalized(value) ||
-          normalized(opt.textContent) === normalized(value)
-      );
-      if (option) {
-        input.value = option.value;
-      } else if (value) {
-        const newOpt = document.createElement("option");
-        newOpt.value = value;
-        newOpt.textContent = value;
-        newOpt.selected = true;
-        input.prepend(newOpt);
-      }
-    } else {
-      input.value = value;
-    }
-  });
-
-  inicializarBloqueoCampos(form);
-
-  $("form-creditos").classList.remove("hidden");
-  const submitButton = form.querySelector("button[type='submit']");
-  if (submitButton) submitButton.textContent = "Actualizar Crédito";
-}
-
-// ✅ ACTUALIZAR CRÉDITO — mantiene filtros, posición y sin recarga
-async function actualizarCredito(id, entrada) {
-  try {
-    if (!id) throw new Error("ID no válido.");
-
-    const archivos = ["autorizacion-consulta", "llamadas", "vobo-cliente"];
-    let formData;
-
-    if (entrada instanceof FormData) formData = entrada;
-    else if (entrada instanceof HTMLFormElement) formData = new FormData(entrada);
-    else if (typeof entrada === "object")
-      formData = new FormData(Object.entries(entrada));
-    else throw new Error("Entrada inválida.");
-
-    const { data: actual, error: fetchError } = await supabaseClient
-      .from("creditos_radicados")
-      .select("*")
-      .eq("id", id)
-      .single();
-
-    if (fetchError || !actual) throw new Error("No se encontró el registro.");
-
-    const actualizados = {};
-    const subidasFallidas = [];
-
-    for (const campo of archivos) {
-      const key = campo.replace(/-/g, "_");
-      const input =
-        document.getElementById(campo) ||
-        document.getElementById(`file-${campo}`);
-      const archivo = input?.files?.[0] || null;
-      const valorPrevio = actual[key] ?? null;
-
-      const checkDigital =
-        campo === "autorizacion-consulta"
-          ? $("autorizacion-digital")
-          : null;
-
-      if (archivo) {
-        try {
-          if (checkDigital) checkDigital.checked = false;
-
-          const safeName = archivo.name
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/[^a-zA-Z0-9._-]/g, "_");
-
-          const path = `creditos_radicados/${id}/${Date.now()}_${safeName}`;
-
-          const { error: uploadError } = await supabaseClient.storage
-            .from("archivos")
-            .upload(path, archivo, {
-              cacheControl: "3600",
-              upsert: true,
-              contentType: archivo.type,
-            });
-
-          if (uploadError) throw uploadError;
-
-          const { data: publicData } = supabaseClient.storage
-            .from("archivos")
-            .getPublicUrl(path);
-
-          actualizados[key] = publicData.publicUrl;
-
-        } catch (err) {
-          subidasFallidas.push(campo);
-          console.error(err);
-        }
-        continue;
-      }
-
-      if (checkDigital?.checked) {
-        actualizados[key] = "Digital";
-        continue;
-      }
-
-      actualizados[key] = valorPrevio;
-    }
-
-    formData.forEach((valor, clave) => {
-      if (archivos.includes(clave) || clave.startsWith("file-")) return;
-
-      const key = clave.replace(/-/g, "_");
-      let limpio = valor || null;
-
-      if (limpio !== actual[key]) actualizados[key] = limpio;
-    });
-
-    for (const k in actualizados) {
-      const v = actualizados[k];
-      if (!v || v === "null" || v === "{}") actualizados[k] = null;
-      else if (typeof v === "string") actualizados[k] = v.trim();
-    }
-
-    Object.assign(actualizados, normalizarCreditoSegunReglaLibranza({
-      ...actual,
-      ...actualizados,
-    }));
-
-    const { error: updateError } = await supabaseClient
-      .from("creditos_radicados")
-      .update(actualizados)
-      .eq("id", id);
-
-    if (updateError) throw updateError;
-
-    mostrarMensaje(null, "exito", "✅ Crédito actualizado correctamente.");
-
-    await aplicarFiltrosCreditos();
-
-  } catch (err) {
-    console.error(err);
-    mostrarMensaje(null, "error", `⚠️ Error al actualizar: ${err.message}`);
-  }
-}
-
-// 🔗 Sincroniza checkbox Digital y archivo
-const fileAut = $("file-autorizacion-consulta");
-const checkDigital = $("autorizacion-digital");
-
-if (fileAut && checkDigital) {
-  fileAut.addEventListener("change", () => {
-    if (fileAut.files.length > 0) checkDigital.checked = false;
-  });
-}
-
-// ✅ Eliminar crédito (sin cambios)
-async function eliminarCredito(id) {
-  const confirmar = confirm("¿Seguro que deseas eliminar este crédito?");
-  if (!confirmar) return;
-
-  const { error } = await supabaseClient
-    .from("creditos_radicados")
-    .delete()
-    .eq("id", id);
-
-  if (error) {
-    console.error("Error eliminando crédito:", error);
-    mostrarMensaje(null, "error", "❌ No se pudo eliminar el crédito.");
-    return;
-  }
-
-  mostrarMensaje(null, "exito", "✅ Crédito eliminado correctamente.");
-  invalidateTab("creditos");
-  if (__getActiveAdminTabId() === "creditos") {
-    await ensureTabData("creditos", { force: true });
-  }
-}
-
-function actualizarTotalesCreditos() {
-  const tbody = $("solicitudes-table-body-creditos");
-  const tabla = tbody?.closest("table");
-  if (!tabla) return;
-
-  const filas = tabla.querySelectorAll("tbody tr");
-
-  // 🔹 Contar solo las filas visibles
-  const filasVisibles = Array.from(filas).filter(
-    (f) => f.style.display !== "none"
-  );
-  const totalClientes = filasVisibles.length;
-
-  // Totales
-  let totalSolicitado = 0;
-  let totalRetanqueo = 0;
-  let totalSaldo = 0;
-  let totalAprobadoLibranza = 0;
-  let totalPagadoLibranza = 0;
-  let totalPendienteLibranza = 0;
-  let totalAprobadoCredivillas = 0;
-  let totalPagadoCredivillas = 0;
-  let totalAprobadoHipotecario = 0;
-  let totalPagadoHipotecario = 0;
-  let totalAprobadoTarjeta = 0;
-  let totalTarjetasActivadas = 0;
-
-  // 🧮 Convierte texto con formato a número real
-  const parsear = (txt) => {
-    if (!txt) return 0;
-    const limpio = txt
-      .toString()
-      .replace(/[^0-9,.-]/g, "")
-      .replace(/\./g, "")
-      .replace(",", ".");
-    return parseFloat(limpio) || 0;
-  };
-
-  // ✅ Sumar solo las filas visibles
-  filasVisibles.forEach((fila) => {
-    const celdas = fila.querySelectorAll("td");
-    totalSolicitado += parsear(celdas[19]?.textContent);
-    totalRetanqueo += parsear(celdas[20]?.textContent);
-    totalSaldo += parsear(celdas[21]?.textContent);
-    totalAprobadoLibranza += parsear(celdas[22]?.textContent);
-    totalPagadoLibranza += parsear(celdas[23]?.textContent);
-    totalPendienteLibranza += parsear(celdas[24]?.textContent);
-    totalAprobadoCredivillas += parsear(celdas[25]?.textContent);
-    totalPagadoCredivillas += parsear(celdas[26]?.textContent);
-    totalAprobadoHipotecario += parsear(celdas[27]?.textContent);
-    totalPagadoHipotecario += parsear(celdas[28]?.textContent);
-    totalAprobadoTarjeta += parsear(celdas[29]?.textContent);
-    totalTarjetasActivadas += parsear(celdas[30]?.textContent);
-  });
-
-  // 🧹 Eliminar sumatoria anterior
-  const tfootExistente = tabla.querySelector("tfoot");
-  if (tfootExistente) tfootExistente.remove();
-
-  // 🧱 Crear pie de tabla con totales actualizados
-  const tfoot = document.createElement("tfoot");
-  tfoot.innerHTML = `
-    <tr class="bg-gray-100 font-semibold text-gray-800 border-t border-gray-400">
-      <td colspan="19" class="px-4 py-2 text-center border border-gray-300">
-        TOTAL CLIENTES: ${totalClientes}
-      </td>
-      <td class="px-4 py-2 text-right border border-gray-300">${formatCurrency(
-    totalSolicitado
-  )}</td>
-      <td class="px-4 py-2 text-right border border-gray-300">${formatCurrency(
-    totalRetanqueo
-  )}</td>
-      <td class="px-4 py-2 text-right border border-gray-300">${formatCurrency(
-    totalSaldo
-  )}</td>
-      <td class="px-4 py-2 text-right border border-gray-300">${formatCurrency(
-    totalAprobadoLibranza
-  )}</td>
-      <td class="px-4 py-2 text-right border border-gray-300">${formatCurrency(
-    totalPagadoLibranza
-  )}</td>
-      <td class="px-4 py-2 text-right border border-gray-300">${formatCurrency(
-    totalPendienteLibranza
-  )}</td>
-      <td class="px-4 py-2 text-right border border-gray-300">${formatCurrency(
-    totalAprobadoCredivillas
-  )}</td>
-      <td class="px-4 py-2 text-right border border-gray-300">${formatCurrency(
-    totalPagadoCredivillas
-  )}</td>
-      <td class="px-4 py-2 text-right border border-gray-300">${formatCurrency(
-    totalAprobadoHipotecario
-  )}</td>
-      <td class="px-4 py-2 text-right border border-gray-300">${formatCurrency(
-    totalPagadoHipotecario
-  )}</td>
-      <td class="px-4 py-2 text-right border border-gray-300">${formatCurrency(
-    totalAprobadoTarjeta
-  )}</td>
-      <td class="px-4 py-2 text-right border border-gray-300">${totalTarjetasActivadas.toLocaleString(
-    "es-CO"
-  )}</td>
-      <td colspan="14" class="border border-gray-300"></td>
-    </tr>
-  `;
-  tabla.appendChild(tfoot);
-}
-
-function obtenerColorPorEtapa(etapa) {
-  if (!etapa) return "";
-
-  etapa = etapa
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-
-  // Azul: análisis, preanálisis o en estudio
-  if (["analisis", "preanalisis", "en estudio"].includes(etapa)) {
-    return "#3b82f6"; // azul
-  }
-
-  // Rojo: negado, retenido por otra entidad, desiste
-  if (["negado", "retenido por otra entidad", "desiste"].includes(etapa)) {
-    return "#ef4444"; // rojo
-  }
-
-  // Naranja: radicación pendiente, enviado
-  if (["radicacion pendiente", "enviado"].includes(etapa)) {
-    return "#f97316"; // naranja
-  }
-
-  // Amarillo: negado pte validar
-  if (["negado pte validar"].includes(etapa)) {
-    return "#facc15"; // amarillo
-  }
-
-  // Verde: contabilización aceptado, aceptado, desembolsado
-  if (
-    ["contabilizacion aceptado", "aceptado", "desembolsado"].includes(etapa)
-  ) {
-    return "#22c55e"; // verde
-  }
-
-  // Sin color para las demás etapas
-  return "";
-}
-
-// 🩷 Detectar y resaltar clientes repetidos por cédula en la tabla de créditos
-function resaltarClientesRepetidos() {
-  const filas = $$(
-    "#solicitudes-table-body-creditos tr"
-  );
-  const contador = {};
-
-  // 1️⃣ Contar cuántas veces aparece cada cédula
-  filas.forEach((fila) => {
-    const cedula = fila.querySelector(".col-cedula")?.textContent?.trim();
-    if (cedula) contador[cedula] = (contador[cedula] || 0) + 1;
-  });
-
-  // 2️⃣ Resaltar la celda del nombre si la cédula se repite
-  filas.forEach((fila) => {
-    const cedula = fila.querySelector(".col-cedula")?.textContent?.trim();
-    const celdaNombre = fila.querySelector(".col-nombre");
-    const celdaCedula = fila.querySelector(".col-cedula");
-
-    if (cedula && celdaNombre && celdaCedula) {
-      if (contador[cedula] > 1) {
-        // 💖 Resalta la celda del nombre completa
-        celdaNombre.style.backgroundColor = "#fbcfe8"; // rosado claro
-        celdaNombre.style.color = "black";
-        celdaNombre.style.border = "2px solid #f472b6";
-      } else {
-        // 🔄 Restaura estilos originales si no hay duplicado
-        celdaNombre.style.backgroundColor = "";
-        celdaNombre.style.color = "black";
-        celdaNombre.style.fontWeight = "";
-        celdaNombre.style.border = "";
-      }
-    }
-  });
-}
-
-// ✅ Ejecutar después de cargar los créditos
-document.addEventListener("DOMContentLoaded", () => {
-  if ($("solicitudes-table-body-creditos")) {
-    // Esperar a que se carguen los datos antes de aplicar el resaltado
-    setTimeout(resaltarClientesRepetidos, 1500);
-  }
-});
-
-// Renderizar fila
-function renderFilaCredito(c) {
-  const colorEtapa = obtenerColorPorEtapa(c.datos?.etapa || c.etapa);
-
-  // 🧹 Helper para validar URLs de archivos
-  const esURLValida = (v) =>
-    v &&
-    typeof v === "string" &&
-    v.startsWith("http") &&
-    !["{}", "undefined", "null"].includes(v.trim());
-
-  // 🟢 Mostrar correctamente la autorización de consulta
-  const mostrarAutorizacion = (() => {
-    if (c.autorizacion_consulta === "Digital") {
-      return `<span class="text-green-600 font-semibold">Digital</span>`;
-    } else if (esURLValida(c.autorizacion_consulta)) {
-      return `<a href="${c.autorizacion_consulta}" target="_blank" class="text-blue-600 underline">Ver PDF</a>`;
-    } else {
-      return `<span class="text-gray-400 italic">Sin archivo</span>`;
-    }
-  })();
-
-  const ocultarSeguroYCampana = aplicaReglaLibranzaSinSeguroNiCampana({
-    entidad: c.entidad,
-    linea: c.linea,
-  });
-  const campanaVisible = ocultarSeguroYCampana ? "" : (c.campana || "");
-  const seguroVisible = ocultarSeguroYCampana ? "" : (c.seguro || "");
-
-  return `
-    <tr>
-      <!-- Acciones -->
-      <td class="border px-4 py-2 text-center whitespace-nowrap">
-        ${(() => {
-      const userRole = getUserRole(); // Rol actual
-      let botones = `
-            <button onclick="editarCredito(${c.id})"
-              class="bg-yellow-500 text-white px-3 py-1 rounded mr-2 hover:bg-yellow-600 transition whitespace-nowrap">
-              <i class="fas fa-edit"></i> Editar
-            </button>`;
-
-      // Solo admin puede eliminar
-      if (userRole === "admin") {
-        botones += `
-              <button onclick="eliminarCredito(${c.id})"
-                class="bg-red-500 text-white px-2 py-1 rounded hover:bg-red-600 transition whitespace-nowrap">
-                <i class="fas fa-trash"></i> Eliminar
-              </button>`;
-      }
-
-      return botones;
-    })()}
-      </td>
-
-      <td class="border px-4 text-sm whitespace-nowrap">${c.operativo || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.entidad || ""}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.oficina || ""}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.numero_credito || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap col-cedula" 
-          style="background-color: ${colorEtapa}; color: black; text-align: center;">
-          ${c.cedula || ""}
-      </td>
-      <td class="border px-4 text-sm whitespace-nowrap col-nombre">${c.nombre || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.linea || ""}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.tipo_solicitud || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.fecha_consulta || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.resultado_consulta || ""
-    }</td>
-    <td class="border px-4 text-sm whitespace-nowrap">${campanaVisible}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${formatPercentage(
-      c.tasa
-    )}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.fecha_radicacion || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.fecha_nacimiento || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.edad ? c.edad + " años" : ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.telefono || ""}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.convenio_libranza || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.empresa || ""}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${formatCurrency(
-      c.monto_solicitado
-    )}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${formatCurrency(
-      c.monto_retanqueo
-    )}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${formatCurrency(
-      c.saldo_comprar
-    )}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${formatCurrency(
-      c.monto_aprobado_libranza
-    )}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${formatCurrency(
-      c.monto_pagado_libranza
-    )}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${formatCurrency(
-      c.monto_pendiente_libranza
-    )}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${formatCurrency(
-      c.monto_aprobado_credivillas
-    )}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${formatCurrency(
-      c.monto_pagado_credivillas
-    )}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${formatCurrency(
-      c.monto_aprobado_hipotecario
-    )}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${formatCurrency(
-      c.monto_pagado_hipotecario
-    )}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${formatCurrency(
-      c.monto_aprobado_tarjeta
-    )}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.numero_tarjetas_activadas || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.categorias_tdc || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.entidad_comprar || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${seguroVisible}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.departamento || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.ciudad || ""}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.plazo || ""}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.etapa || ""}</td>
-
-      <!-- Archivos -->
-      <td class="border px-4 py-2 text-center">${mostrarAutorizacion}</td>
-
-      <td class="border px-4 py-2 text-center">
-        ${esURLValida(c.llamadas)
-      ? `<audio controls class="mx-auto"><source src="${c.llamadas}" type="audio/mpeg"></audio>`
-      : `<span class="text-gray-400 italic">Sin audio</span>`
-    }
-      </td>
-      <td class="border px-4 py-2 text-center">
-        ${esURLValida(c.vobo_cliente)
-      ? `<audio controls class="mx-auto"><source src="${c.vobo_cliente}" type="audio/mpeg"></audio>`
-      : `<span class="text-gray-400 italic">Sin audio</span>`
-    }
-      </td>
-
-      <td class="border px-4 text-sm whitespace-nowrap">${c.fecha_desembolso || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.coordinador || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.ejecutivo_comercial || ""
-    }</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.anio || ""}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.mes || ""}</td>
-      <td class="border px-4 text-sm whitespace-nowrap">${c.observaciones || ""
-    }</td>
-    </tr>
-  `;
-}
-
 // --- Ver detalles de una solicitud o historial de un cliente ---
 async function verDetalles({ id = null, clienteId = null, isHistory = false }) {
   try {
@@ -3186,188 +2003,138 @@ async function verDetalles({ id = null, clienteId = null, isHistory = false }) {
     const table = isHistory ? "historial_clientes" : "solicitudes";
     let solicitudes = [];
 
-    // 🔹 Caso 1: Detalle único por ID
+    // 🔹 POR ID
     if (id) {
-      const { data: solicitud, error } = await supabaseClient
+      const { data, error } = await supabaseClient
         .from(table)
         .select("*")
         .eq("id", id)
         .single();
 
-      if (error || !solicitud) {
-        mostrarMensaje(null, "error", "La solicitud no fue encontrada.");
-        return;
+      if (error || !data) {
+        return mostrarMensaje(null, "error", "Solicitud no encontrada.");
       }
-      solicitudes.push(solicitud);
+
+      solicitudes = [data];
     }
 
-    // 🔹 Caso 2: Historial por clienteId (documento o email)
+    // 🔹 HISTORIAL POR CLIENTE
     if (clienteId) {
-      let { data: byDoc, error: docError } = await supabaseClient
+      const { data, error } = await supabaseClient
         .from("historial_clientes")
         .select("*")
-        .eq("documento", clienteId)
+        .or(`documento.eq.${clienteId},email.eq.${clienteId}`)
         .order("fecha", { ascending: false });
 
-      if (docError) console.error("Error buscando por documento:", docError);
-
-      if (!byDoc || byDoc.length === 0) {
-        let { data: byEmail, error: emailError } = await supabaseClient
-          .from("historial_clientes")
-          .select("*")
-          .eq("email", clienteId)
-          .order("fecha", { ascending: false });
-
-        if (emailError) console.error("Error buscando por email:", emailError);
-        solicitudes = byEmail || [];
-      } else {
-        solicitudes = byDoc;
+      if (error) {
+        console.error(error);
       }
+
+      solicitudes = data || [];
     }
 
     if (solicitudes.length === 0) {
-      mostrarMensaje(
-        null,
-        "error",
-        "No se encontraron solicitudes para este cliente."
-      );
-      return;
+      return mostrarMensaje(null, "error", "Sin resultados.");
     }
 
-    // 🔹 Renderizar detalles
-    const detailsContainer = $("details-content");
-    let html = "";
+    const container = $("details-content");
 
-    if (clienteId) {
-      html += `<h3 class="text-xl font-semibold mb-4">Historial del Cliente: ${solicitudes[0].nombre || "N/A"
-        }</h3>`;
-    }
+    container.innerHTML = solicitudes
+      .map((s, i) =>
+        renderSolicitudDetalle(s, i, userRole, isHistory, table)
+      )
+      .join("");
 
-    solicitudes.forEach((solicitud, idx) => {
-      html += renderSolicitudDetalle(
-        solicitud,
-        idx,
-        userRole,
-        isHistory,
-        table
-      );
-    });
-
-    detailsContainer.innerHTML = html;
-
-    // 🔹 Eventos dinámicos (botones)
-    solicitudes.forEach((solicitud) => {
-      if (!isHistory && (userRole === "admin" || userRole === "operativo")) {
-        const updateBtn = document.getElementById(
-          `update-status-button-${solicitud.id}`
-        );
-        if (updateBtn) {
-          updateBtn.onclick = async () => {
-            const nuevoEstado = document.getElementById(
-              `estado-select-${solicitud.id}`
-            ).value;
-            await cambiarEstado(solicitud.id, nuevoEstado);
-            document
-              .getElementById("details-modal")
-              .classList.remove("visible");
+    // ✅ EVENTOS
+    solicitudes.forEach((s) => {
+      if (!isHistory && ["admin", "operativo"].includes(userRole)) {
+        const btn = $(`update-status-button-${s.id}`);
+        if (btn) {
+          btn.onclick = async () => {
+            const estado = $(`estado-select-${s.id}`).value;
+            await cambiarEstado(s.id, estado);
+            $("details-modal").classList.remove("visible");
           };
         }
       }
 
-      if (userRole === "admin" || userRole === "operativo") {
-        const saveBtn = document.getElementById(
-          `save-details-button-${solicitud.id}`
-        );
-        if (saveBtn) {
-          saveBtn.onclick = async () => {
-            await guardarCambiosSolicitud(solicitud.id, solicitud.tipo, table);
-          };
+      if (["admin", "operativo"].includes(userRole)) {
+        const btn = $(`save-details-button-${s.id}`);
+        if (btn) {
+          btn.onclick = () =>
+            guardarCambiosSolicitud(s.id, s.tipo, table);
         }
       }
     });
 
     $("details-modal").classList.add("visible");
   } catch (e) {
-    console.error("Error mostrando detalles:", e);
-    mostrarMensaje(null, "error", "Error al cargar detalles.");
+    console.error(e);
+    mostrarMensaje(null, "error", "Error cargando detalles.");
   }
 }
 
 // --- Renderizar los detalles de la solicitud ---
-function renderSolicitudDetalle(solicitud, idx, userRole, isHistory, table) {
-  let html = `<div class="mb-6 p-4 border rounded-lg bg-gray-50">`;
+function renderSolicitudDetalle(s, idx, userRole, isHistory) {
+  let html = `
+  <div class="mb-6 p-4 border rounded bg-gray-50">
+    <h4 class="font-semibold mb-2">
+      Solicitud #${idx + 1} - ${obtenerNombreTipo(s.tipo)}
+    </h4>
 
-  if (idx !== undefined) {
-    html += `<h4 class="font-semibold mb-2">Solicitud #${idx + 1
-      } - ${obtenerNombreTipo(solicitud.tipo)}</h4>`;
-  }
-
-  html += `
-    <p><strong>ID:</strong> ${solicitud.id}</p>
-    <p><strong>Fecha Solicitud:</strong> ${formatDate(solicitud.fecha)}</p>
-    <p><strong>Cambiado Por:</strong> ${solicitud.cambiadopor || "N/A"}</p>
-    ${isHistory
-      ? `<p><strong>Fecha Completado:</strong> ${formatDate(
-        solicitud.fechacompletado
-      )}</p>`
-      : ""
-    }
+    <p><b>ID:</b> ${s.id}</p>
+    <p><b>Fecha:</b> ${formatDate(s.fecha)}</p>
+    <p><b>Cambiado por:</b> ${s.cambiadopor || "N/A"}</p>
+    ${isHistory ? `<p><b>Finalizado:</b> ${formatDate(s.fechacompletado)}</p>` : ""}
   `;
+``
 
   // 🔹 Mostrar y actualizar estado general de la solicitud
-  if (!isHistory && (userRole === "admin" || userRole === "operativo")) {
+if (!isHistory && ["admin","operativo"].includes(userRole)) {
     html += `
-      <div class="mb-2">
-        <label class="block text-gray-700 text-sm font-bold mb-1">Estado:</label>
-        <select id="estado-select-${solicitud.id
-      }" class="shadow border rounded w-full py-2 px-3 text-gray-700">
-          <option value="Pendiente" ${solicitud.estado === "Pendiente" ? "selected" : ""
-      }>Pendiente</option>
-          <option value="Realizado" ${solicitud.estado === "Realizado" ? "selected" : ""
-      }>Realizado</option>
-        </select>
-        <button id="update-status-button-${solicitud.id
-      }" class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors mt-2">
-          Actualizar Estado
-        </button>
-      </div>
+      <select id="estado-select-${s.id}">
+        <option ${s.estado==="Pendiente"?"selected":""}>Pendiente</option>
+        <option ${s.estado==="Realizado"?"selected":""}>Realizado</option>
+      </select>
+
+      <button id="update-status-button-${s.id}">
+        Actualizar
+      </button>
     `;
   } else {
-    html += `<p><strong>Estado:</strong> ${solicitud.estado}</p>`;
+    html += `<p><b>Estado:</b> ${s.estado}</p>`;
   }
+``
 
-  html += `<hr class="my-2">`;
+ // html += `<hr class="my-2">`;
 
   // 🔹 Observaciones
   html += `
-    <div class="mb-2">
-      <label class="block text-gray-700 text-sm font-bold mb-1">Observaciones:</label>
-      <textarea id="edit-observaciones-${solicitud.id}"
-        class="shadow border rounded w-full py-2 px-3 text-gray-700"
-        data-field-name="observaciones" ${userRole !== "admin" && userRole !== "operativo" ? "readonly" : ""
-    }>${solicitud.observaciones || ""}</textarea>
+    <div>
+      <label>Observaciones</label>
+      <textarea id="edit-observaciones-${s.id}"
+        ${!["admin","operativo"].includes(userRole) ? "readonly":""}>
+        ${s.observaciones || ""}
+      </textarea>
     </div>
   `;
+  
+  if (s.datos) {
+    Object.entries(s.datos).forEach(([k, v]) => {
 
-  // 🔹 Renderizar todos los campos guardados (incluido estado asesor)
-  camposOrdenados.forEach((key) => {
-    if (solicitud.datos && solicitud.datos[key] !== undefined) {
-      let valor = solicitud.datos[key];
-      if (valor === null || valor === "" || valor === undefined) valor = "-";
+      let valor = v ?? "-";
 
-      // Formatear valores numéricos
-      if (
-        [
-          "valor-credito",
-          "valor-vivienda",
-          "ingreso-principal",
-          "otros-ingresos",
-          "valor-inmueble",
-          "valor-activos",
-        ].includes(key.toLowerCase())
-      ) {
+      if ([
+        "valor-credito","valor-vivienda",
+        "ingreso-principal","otros-ingresos",
+        "valor-inmueble","valor-activos"
+      ].includes(k)) {
         valor = valor === "-" ? "-" : formatCurrency(valor);
       }
+
+      html += renderCampo(k, valor, s.id, userRole, isHistory);
+    });
+  }
 
       // 🔸 Mostrar el estado del asesor con el mismo formato visual que los demás campos
       if (key.toLowerCase().includes("estado-asesor")) {
@@ -3404,225 +2171,186 @@ function renderSolicitudDetalle(solicitud, idx, userRole, isHistory, table) {
   });
 
   // 🔹 Botón de guardar
-  if (userRole === "admin" || userRole === "operativo") {
-    html += `
-      <button id="save-details-button-${solicitud.id}"
-        class="gradient-bg text-white px-8 py-3 rounded-lg font-semibold hover:opacity-90 transition-opacity mt-4">
-        <i class="fas fa-save mr-2"></i>Guardar Cambios
-      </button>
-    `;
+  if (["admin","operativo"].includes(userRole)) {
+    html += `<button id="save-details-button-${s.id}">Guardar</button>`;
   }
 
   return html + `</div>`;
 }
 
-function renderCampo(key, value, solicitudId, userRole, tipo, isHistory) {
-  let formattedKey = formatearNombreCampo(key);
+function renderCampo(key, value, id, role, isHistory) {
 
-  // Detectar si es campo numérico de moneda
-  const camposMoneda = [
-    "valor-credito",
-    "valor-vivienda",
-    "ingreso-principal",
-    "otros-ingresos",
-    "valor-inmueble",
-    "valor-activos",
-  ];
-  const esCampoMoneda = camposMoneda.includes(key);
+  const label = formatearNombreCampo(key);
+  const esMoneda = [
+    "valor-credito","valor-vivienda",
+    "ingreso-principal","otros-ingresos",
+    "valor-inmueble","valor-activos"
+  ].includes(key);
 
-  // Para mostrar en texto, formatear moneda
-  let displayValue = value;
-  if (esCampoMoneda) {
-    displayValue = formatCurrency(value);
+  // 📎 LINK
+  if (typeof value === "string" && value.startsWith("http")) {
+    return `<p><b>${label}:</b>
+      <a href="${value}" target="_blank">Descargar</a>
+    </p>`;
   }
 
-  // Si es archivo
-  if (
-    typeof value === "string" &&
-    (value.startsWith("http://") || value.startsWith("https://"))
-  ) {
-    const fileName = value.substring(value.lastIndexOf("/") + 1).split("?")[0];
-    return `<p><strong>${formattedKey}:</strong> <a href="${value}" target="_blank" class="text-blue-600 hover:underline"><i class="fas fa-download mr-1"></i> Descargar ${fileName}</a></p>`;
+  // ✏️ EDITABLE
+  if (["admin","operativo"].includes(role)) {
+
+    const val = esMoneda ? (value || "") : value;
+
+    return `
+      <div>
+        <label>${label}</label>
+        <input id="edit-${key}-${id}" value="${val}"
+          data-field-name="${key}">
+      </div>
+    `;
   }
 
-  // Editable
-  if (userRole === "admin" || userRole === "operativo") {
-    // Eliminada la condición tipo !== "trabaja-nosotros"
-    let inputElement = "";
-    if (selectOptions[key]) {
-      inputElement = getSelectHtml(key, value);
-    } else {
-      let inputType = "text";
-      if (
-        key.includes("cedula") ||
-        key.includes("telefono") ||
-        key.includes("nit") ||
-        key.includes("plazo")
-      ) {
-        inputType = "number";
-      } else if (key.includes("fecha")) {
-        inputType = "date";
-      } else if (key.includes("email")) {
-        inputType = "email";
-      }
-
-      // Para campos moneda, asignar valor sin formatear en input number
-      let inputValue = value;
-      if (inputType === "number" && esCampoMoneda) {
-        // Asegurar que sea número o vacío
-        inputValue =
-          isNaN(value) || value === null || value === undefined ? "" : value;
-      }
-
-      inputElement = `<input type="${inputType}" id="edit-${key}-${solicitudId}" value="${inputValue || ""
-        }" class="shadow border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" data-field-name="${key}">`;
-    }
-    return `<div class="mb-2"><label class="block text-gray-700 text-sm font-bold mb-1">${formattedKey}:</label>${inputElement}</div>`;
-  }
-
-  // Solo mostrar texto formateado
-  return `<p><strong>${formattedKey}:</strong> ${displayValue}</p>`;
+  return `<p><b>${label}:</b> ${value}</p>`;
 }
 
 // --- Helpers para cerrar el modal ---
-$("close-details-modal").addEventListener("click", () => {
+$("close-details-modal")?.addEventListener("click", () => {
   $("details-modal").classList.remove("visible");
 });
-document
-  .getElementById("close-details-modal-btn")
-  .addEventListener("click", () => {
-    $("details-modal").classList.remove("visible");
-  });
 
-// --- Guardar Cambios en Solicitud (con merge para no perder datos) ---
+$("close-details-modal-btn")?.addEventListener("click", () => {
+  $("details-modal").classList.remove("visible");
+});
+
 async function guardarCambiosSolicitud(id, tipo, tableName) {
+
   const userRole = getUserRole();
 
-  // 🔒 Verificación de permisos
-  if (userRole !== "admin" && userRole !== "operativo") {
-    mostrarMensaje(null, "error", "No tienes permiso para editar solicitudes.");
-    return;
+  // 🔒 PERMISOS
+  if (!["admin", "operativo"].includes(userRole)) {
+    return mostrarMensaje(null, "error", "No tienes permiso para editar.");
   }
 
-  // 🧩 1️⃣ Obtener datos existentes
-  const { data: solicitudExistente, error: getError } = await supabaseClient
+  // 🔹 TRAER DATOS ACTUALES
+  const { data, error } = await supabaseClient
     .from(tableName)
     .select("datos")
     .eq("id", id)
     .single();
 
-  if (getError || !solicitudExistente) {
-    mostrarMensaje(null, "error", "Error al obtener datos anteriores.");
-    return;
+  if (error || !data) {
+    return mostrarMensaje(null, "error", "Error obteniendo datos.");
   }
 
-  const datosOriginales = solicitudExistente.datos || {};
-  const updatedDatos = {};
-  const detailsContainer = $("details-content");
+  const datosOriginales = data.datos || {};
+  const nuevosDatos = {};
 
-  // 🧠 2️⃣ Recolectar solo campos válidos (sin sobrescribir vacíos)
-  detailsContainer.querySelectorAll(`[id^="edit-"][data-field-name]`).forEach((input) => {
-    const fieldName = input.dataset.fieldName;
-    let value = input.value;
+  const container = $("details-content");
 
-    if (input.tagName === "SELECT") {
-      // Limpieza de valores de selects
-      value = value
-        .toLowerCase()
-        .replace(/ /g, "-")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/\//g, "");
-    }
-    // Campos numéricos y de identificación
-    else if (
-      [
-        "valor-credito",
-        "valor-vivienda",
-        "ingreso-principal",
-        "otros-ingresos",
-        "valor-inmueble",
-        "valor-activos",
-        "cedula-cliente",
-        "nit-empresa",
-        "telefono-empresa",
-        "cedula-asesor",
-        "cedula-radicacion",
-        "telefono-referencia1",
-        "telefono-referencia2",
-        "telefono-referencia3",
-        "cedula-beneficiario",
-        "plazo",
-        "cedula-trabaja",
-      ].includes(fieldName)
-    ) {
-      if (value === "" || value === "-" || value == null) {
-        // Conserva el valor previo si el input está vacío
-        value = datosOriginales[fieldName] ?? 0;
-      } else {
-        const parsed = parseFloat(value);
-        value = isNaN(parsed) ? datosOriginales[fieldName] ?? 0 : parsed;
+  // 🔹 RECOLECTAR INPUTS
+  container.querySelectorAll(`[id^="edit-"][data-field-name]`)
+    .forEach(input => {
+
+      const campo = input.dataset.fieldName;
+      let valor = input.value;
+
+      // ✅ LIMPIAR SELECT
+      if (input.tagName === "SELECT") {
+        valor = valor
+          .toLowerCase()
+          .replace(/ /g, "-")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\//g, "");
       }
-    }
 
-    // 🚫 Evita sobrescribir con valores vacíos
-    if (value !== "" && value !== "-" && value != null) {
-      updatedDatos[fieldName] = value;
-    }
-  });
+      // ✅ NUMÉRICOS
+      else if ([
+        "valor-credito","valor-vivienda",
+        "ingreso-principal","otros-ingresos",
+        "valor-inmueble","valor-activos",
+        "cedula-cliente","cedula-radicacion",
+        "cedula-asesor","cedula-beneficiario",
+        "telefono-referencia1","telefono-referencia2",
+        "telefono-referencia3","telefono-empresa",
+        "nit-empresa","plazo"
+      ].includes(campo)) {
 
-  // 📝 3️⃣ Leer observaciones
-  const observacionesInput = document.getElementById(`edit-observaciones-${id}`);
-  const updatedObservaciones = observacionesInput ? observacionesInput.value : "";
+        if (!valor || valor === "-") {
+          valor = datosOriginales[campo] ?? 0;
+        } else {
+          const num = parseFloat(valor);
+          valor = isNaN(num) ? datosOriginales[campo] ?? 0 : num;
+        }
+      }
 
-  // 🧮 4️⃣ Fusionar datos (sin perder originales)
-  const datosFinales = { ...datosOriginales, ...updatedDatos };
+      // 🚫 NO SOBREESCRIBIR VACÍOS
+      if (valor !== "" && valor !== "-" && valor != null) {
+        nuevosDatos[campo] = valor;
+      }
+    });
 
-  // 📦 5️⃣ Actualizar campos principales visibles
+  // 🔹 OBSERVACIONES
+  const observaciones =
+    document.getElementById(`edit-observaciones-${id}`)?.value || "";
+
+  // 🔹 MERGE FINAL
+  const datosFinales = {
+    ...datosOriginales,
+    ...nuevosDatos
+  };
+
+  // 🔹 CAMPOS PRINCIPALES
   const mainUpdate = {};
 
-  if (tipo === "trabaja-nosotros") {
-    mainUpdate.nombre = datosFinales["nombre"] || "N/A";
-    mainUpdate.email = datosFinales["email"] || "N/A";
-    mainUpdate.documento = datosFinales["cedula-trabaja"] || "N/A";
-  } else if (tipo === "radicacion") {
-    mainUpdate.nombre = `${datosFinales["radicacion-apellido1"] || ""} ${datosFinales["radicacion-apellido2"] || ""} ${datosFinales["radicacion-nombre1"] || ""} ${datosFinales["radicacion-nombre2"] || ""}`.trim();
+  if (tipo === "radicacion") {
+    mainUpdate.nombre = `
+      ${datosFinales["radicacion-apellido1"] || ""}
+      ${datosFinales["radicacion-apellido2"] || ""}
+      ${datosFinales["radicacion-nombre1"] || ""}
+      ${datosFinales["radicacion-nombre2"] || ""}
+    `.trim();
+
     mainUpdate.documento = datosFinales["cedula-radicacion"] || "N/A";
     mainUpdate.email = datosFinales["radicacion-correo-electronico"] || "N/A";
+
   } else {
-    mainUpdate.nombre = `${datosFinales["apellido1"] || ""} ${datosFinales["apellido2"] || ""} ${datosFinales["nombre1"] || ""} ${datosFinales["nombre2"] || ""}`.trim();
+    mainUpdate.nombre = `
+      ${datosFinales["apellido1"] || ""}
+      ${datosFinales["apellido2"] || ""}
+      ${datosFinales["nombre1"] || ""}
+      ${datosFinales["nombre2"] || ""}
+    `.trim();
+
     mainUpdate.documento = datosFinales["cedula-cliente"] || "N/A";
     mainUpdate.monto = datosFinales["valor-credito"] || 0;
     mainUpdate.email = datosFinales["email"] || "N/A";
   }
 
-  // 🧾 6️⃣ Guardar en Supabase
+  // 🔹 GUARDAR
   try {
     const { error } = await supabaseClient
       .from(tableName)
       .update({
         datos: datosFinales,
-        observaciones: updatedObservaciones,
-        ...mainUpdate,
+        observaciones,
+        ...mainUpdate
       })
       .eq("id", id);
 
     if (error) throw error;
 
-    mostrarMensaje(null, "exito", "✅ Cambios guardados exitosamente.");
+    mostrarMensaje(null, "exito", "✅ Cambios guardados");
     $("details-modal").classList.remove("visible");
 
-    // 🔁 Recargar tabla según el tipo
-    if (["credivillas", "libranza", "hipotecario", "tarjetas"].includes(tipo)) {
-      await cargarPerfilamiento();
-    } else if (tipo === "radicacion") {
+    // 🔄 RECARGAR TABLAS
+    if (tipo === "radicacion") {
       await cargarRadicacion();
-    } else if (tipo === "trabaja-nosotros") {
-      await cargarTrabajaNosotros();
+    } else {
+      await cargarPerfilamiento();
     }
+
   } catch (e) {
-    console.error("Error al guardar cambios:", e);
-    mostrarMensaje(null, "error", "❌ Hubo un error al guardar los cambios.");
+    console.error(e);
+    mostrarMensaje(null, "error", "❌ Error guardando cambios");
   }
 }
 
@@ -3656,32 +2384,20 @@ async function eliminarSolicitud(id, isHistory = false) {
     // Recargar las tablas relevantes después de la eliminación
     await cargarPerfilamiento();
     await cargarRadicacion();
-    await cargarTrabajaNosotros();
-    await cargarHistorial();
   } catch (e) {
     console.error("Error eliminando solicitud:", e);
     mostrarMensaje(null, "error", "❌ Hubo un error al eliminar la solicitud.");
   }
 }
 
-// --- Exportar historial de clientes ---
 async function exportHistorialClientes() {
+
   const userRole = getUserRole();
   if (userRole !== "admin") {
-    mostrarMensaje(
-      null,
-      "error",
-      "No tienes permiso para exportar el historial."
-    );
-    return;
+    return mostrarMensaje(null, "error", "No tienes permiso.");
   }
 
-  // Puedes crear un modal propio si quieres confirmación visual
-  // Por ahora quitamos el confirm() para no interrumpir la UI
-  // if (!confirm("¿Estás seguro de que quieres exportar el historial combinado de perfilamiento y radicación?")) return;
-
   try {
-    // ✅ Obtener historial desde Supabase
     const { data: historial, error } = await supabaseClient
       .from("historial_clientes")
       .select("*");
@@ -3689,343 +2405,281 @@ async function exportHistorialClientes() {
     if (error) throw error;
 
     const tiposPerfilamiento = [
-      "credivillas",
-      "libranza",
-      "hipotecario",
-      "tarjetas",
+      "credivillas","libranza","hipotecario","tarjetas"
     ];
-    const tiposRadicacion = ["radicacion"];
+
     const clientesMap = new Map();
 
     function procesarDatos(tipo, datos) {
-      const formSpecificData = {};
-      const order = ordenCampos[tipo];
-      if (!order) return {};
 
-      order.forEach((key) => {
+      const resultado = {};
+      const order = ordenCampos[tipo] || [];
+
+      order.forEach(key => {
+
         let value = datos[key];
 
-        if (
-          [
-            "valor-credito",
-            "valor-vivienda",
-            "ingreso-principal",
-            "otros-ingresos",
-            "valor-inmueble",
-            "valor-activos",
-          ].includes(key) &&
-          typeof value === "number"
-        ) {
+        if ([
+          "valor-credito","valor-vivienda",
+          "ingreso-principal","otros-ingresos",
+          "valor-inmueble","valor-activos"
+        ].includes(key) && typeof value === "number") {
+
           value = formatCurrency(value);
-        } else if (
-          typeof value === "string" &&
-          (value.startsWith("http://") || value.startsWith("https://"))
-        ) {
-          value = `[ARCHIVO ADJUNTO] ${value}`;
-        } else if (selectOptions[key] && typeof value === "string") {
-          const originalOption = selectOptions[key].find(
-            (opt) =>
-              opt
-                .toLowerCase()
-                .replace(/ /g, "-")
-                .normalize("NFD")
-                .replace(/[\u0300-\u036f]/g, "")
-                .replace(/\//g, "") === value
-          );
-          if (originalOption) value = originalOption;
         }
-        formSpecificData[key] = value !== undefined ? value : null;
+
+        // archivos
+        else if (typeof value === "string" && value.startsWith("http")) {
+          value = `[ARCHIVO] ${value}`;
+        }
+
+        // selects
+        else if (selectOptions[key] && typeof value === "string") {
+          const match = selectOptions[key].find(opt =>
+            opt.toLowerCase()
+              .replace(/ /g, "-")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "") === value
+          );
+          if (match) value = match;
+        }
+
+        resultado[key] = value ?? null;
       });
 
-      return formSpecificData;
+      return resultado;
     }
 
-    // Procesar historial
-    historial.forEach((data) => {
-      const tipo = data.tipo;
-      if (![...tiposPerfilamiento, ...tiposRadicacion].includes(tipo)) return;
+    // ✅ AGRUPAR CLIENTES
+    historial.forEach(row => {
 
-      const clienteId = data.documento || data.email || data.id;
+      const tipo = row.tipo;
+      if (![...tiposPerfilamiento, "radicacion"].includes(tipo)) return;
 
-      if (!clientesMap.has(clienteId)) {
-        clientesMap.set(clienteId, {
-          idCliente: clienteId,
-          nombre: data.nombre || null,
-          documento: data.documento || null,
-          email: data.email || null,
+      const key = row.documento || row.email || row.id;
+
+      if (!clientesMap.has(key)) {
+        clientesMap.set(key, {
+          cliente: row.nombre,
+          documento: row.documento,
+          email: row.email,
           perfilamiento: null,
-          radicacion: null,
+          radicacion: null
         });
       }
 
-      const cliente = clientesMap.get(clienteId);
-      const datosProcesados = procesarDatos(tipo, data.datos || {});
+      const cliente = clientesMap.get(key);
 
-      if (tiposPerfilamiento.includes(tipo)) {
+      const datos = procesarDatos(tipo, row.datos || {});
+
+      if (tipo === "radicacion") {
+        cliente.radicacion = {
+          fecha: row.fecha,
+          estado: row.estado,
+          datos
+        };
+      } else {
         cliente.perfilamiento = {
           tipo,
-          fecha: data.fecha,
-          estado: data.estado,
-          observaciones: data.observaciones,
-          fechacompletado: data.fechacompletado,
-          cambiadopor: data.cambiadopor,
-          datos: datosProcesados,
-        };
-      } else if (tiposRadicacion.includes(tipo)) {
-        cliente.radicacion = {
-          tipo,
-          fecha: data.fecha,
-          estado: data.estado,
-          observaciones: data.observaciones,
-          fechacompletado: data.fechacompletado,
-          cambiadopor: data.cambiadopor,
-          datos: datosProcesados,
+          fecha: row.fecha,
+          estado: row.estado,
+          datos
         };
       }
     });
 
-    // Convertir a array y ordenar
-    const clientesArray = Array.from(clientesMap.values());
-    clientesArray.sort((a, b) =>
-      a.nombre && b.nombre ? a.nombre.localeCompare(b.nombre) : 0
+    const resultado = Array.from(clientesMap.values());
+
+    // ✅ DESCARGA
+    const blob = new Blob(
+      [JSON.stringify(resultado, null, 2)],
+      { type: "application/json" }
     );
 
-    // Descargar JSON
-    const jsonString = JSON.stringify(clientesArray, null, 2);
-    const blob = new Blob([jsonString], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
+
     a.href = url;
-    a.download = `historial_perfilamiento_radicacion_${new Date()
-      .toISOString()
-      .slice(0, 10)}.json`;
+    a.download = `historial_${new Date().toISOString().slice(0,10)}.json`;
+
     document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
+    a.remove();
     URL.revokeObjectURL(url);
 
-    mostrarMensaje(
-      null,
-      "exito",
-      "✅ Historial combinado exportado exitosamente."
-    );
+    mostrarMensaje(null, "exito", "✅ Historial exportado");
+
   } catch (e) {
-    console.error("Error al exportar historial:", e);
-    mostrarMensaje(null, "error", "❌ Hubo un error al exportar el historial.");
+    console.error(e);
+    mostrarMensaje(null, "error", "Error exportando");
   }
 }
 
-// --- Renderizar filas ---
-function renderFila(solicitud, tableType, isHistory = false) {
-  let extraColsHtml = "";
-  let mainIdentifier = "";
+function renderFila(s, tableType, isHistory = false) {
+
   const userRole = getUserRole();
+  let extraCols = "";
+  let identificador = s.documento || "N/A";
 
-  // --- Columnas extra según tabla ---
+  // ✅ COLUMNAS
   if (tableType === "perfilamiento") {
-    extraColsHtml = `
-      <td class="px-6 py-4 text-sm">
-        ${typeof solicitud.monto === "number"
-        ? formatCurrency(solicitud.monto)
-        : solicitud.monto
-      }
-      </td>
-      <td class="px-6 py-4 text-sm">${solicitud.observaciones || ""}</td>`;
-    mainIdentifier = solicitud.documento;
+
+    extraCols = `
+      <td>${typeof s.monto === "number" ? formatCurrency(s.monto) : s.monto}</td>
+      <td>${s.observaciones || ""}</td>
+    `;
+
   } else if (tableType === "radicacion") {
-    mainIdentifier = solicitud.documento;
-    extraColsHtml = `
-      <td class="px-6 py-4 text-sm">${solicitud.datos?.["tipo-radicacion"] || "N/A"
-      }</td>
-      <td class="px-6 py-4 text-sm">${solicitud.observaciones || ""}</td>`;
-  } else if (tableType === "trabaja-nosotros") {
-    mainIdentifier = solicitud.email;
-    extraColsHtml = `
-      <td class="px-6 py-4 text-sm">${solicitud.documento || "N/A"}</td>
-      <td class="px-6 py-4 text-sm">${solicitud.observaciones || ""}</td>`; // ✅ Observaciones para trabaja-nosotros
+
+    extraCols = `
+      <td>${s.datos?.["tipo-radicacion"] || "N/A"}</td>
+      <td>${s.observaciones || ""}</td>
+    `;
+
   } else if (tableType === "historial") {
-    mainIdentifier = solicitud.documento || solicitud.email || "N/A";
-    extraColsHtml = `
-      <td class="px-6 py-4 text-sm">${formatDate(
-      solicitud.fechacompletado
-    )}</td>`;
+
+    extraCols = `
+      <td>${formatDate(s.fechacompletado)}</td>
+    `;
   }
 
-  // --- Estado editable según tabla ---
-  let estadoHtml = solicitud.estado;
-  if (!isHistory) {
-    if (tableType === "trabaja-nosotros") {
-      // ✅ Estados para Trabaja con Nosotros (incluye Activo y Desactivado)
-      estadoHtml = `
-        <select id="estado-select-${solicitud.id}" class="border rounded p-1">
-          <option value="Pendiente" ${solicitud.estado === "Pendiente" ? "selected" : ""
-        }>Pendiente</option>
-          <option value="En Proceso" ${solicitud.estado === "En Proceso" ? "selected" : ""
-        }>En Proceso</option>
-          <option value="Realizado" ${solicitud.estado === "Realizado" ? "selected" : ""
-        }>Realizado</option>
-          <option value="Activo" ${solicitud.estado === "Activo" ? "selected" : ""
-        }>Activo</option>
-          <option value="Desactivado" ${solicitud.estado === "Desactivado" ? "selected" : ""
-        }>Desactivado</option>
-        </select>
-        <button 
-  onclick="cambiarEstado('${solicitud.id}', document.getElementById('estado-select-${solicitud.id}').value)"
-  class="ml-2 text-green-600 hover:text-green-800">
-  Guardar
-</button>`;
-    } else if (["perfilamiento", "radicacion"].includes(tableType)) {
-      // Estados normales para otras tablas
-      estadoHtml = `
-        <select id="estado-select-${solicitud.id}" class="border rounded p-1">
-          <option value="Pendiente" ${solicitud.estado === "Pendiente" ? "selected" : ""
-        }>Pendiente</option>
-          <option value="En Proceso" ${solicitud.estado === "En Proceso" ? "selected" : ""
-        }>En Proceso</option>
-          <option value="Realizado" ${solicitud.estado === "Realizado" ? "selected" : ""
-        }>Realizado</option>
-        </select>
-        <button 
-  onclick="cambiarEstado('${solicitud.id}', document.getElementById('estado-select-${solicitud.id}').value)"
-  class="ml-2 text-green-600 hover:text-green-800">
-  Guardar
-</button>`;
-    }
+  // ✅ ESTADO
+  let estadoHTML = s.estado;
+
+  if (!isHistory && ["admin","operativo"].includes(userRole)) {
+
+    estadoHTML = `
+      <select id="estado-select-${s.id}">
+        <option ${s.estado==="Pendiente"?"selected":""}>Pendiente</option>
+        <option ${s.estado==="En Proceso"?"selected":""}>En Proceso</option>
+        <option ${s.estado==="Realizado"?"selected":""}>Realizado</option>
+      </select>
+
+      <button onclick="cambiarEstado('${s.id}', document.getElementById('estado-select-${s.id}').value)">
+        Guardar
+      </button>
+    `;
   }
 
-  // --- Botones de acción ---
-  let actionButtons = `
-  <div class="flex items-center gap-3">
-    <button onclick="verDetalles({ id: '${solicitud.id}', isHistory: ${isHistory} })"
-      class="text-blue-600 hover:text-blue-900">
-      <i class="fas fa-eye"></i> Ver
-    </button>
-`;
+  // ✅ BOTONES
+  let acciones = `
+    <button onclick="verDetalles({ id:'${s.id}', isHistory:${isHistory} })">Ver</button>
+  `;
 
-  // 🔽 Botón PDF según tipo de tabla
   if (tableType === "perfilamiento") {
-    actionButtons += `
-    <button onclick="descargarPDFPerfilamiento('${solicitud.id}')"
-      class="text-red-600 hover:text-red-900">
-      <i class="fas fa-file-pdf"></i> PDF
-    </button>`;
-  } else if (tableType === "radicacion") {
-    actionButtons += `
-    <button onclick="descargarPDFRadicacion('${solicitud.id}')"
-      class="text-red-600 hover:text-red-900">
-      <i class="fas fa-file-pdf"></i> PDF
-    </button>`;
+    acciones += `
+      <button onclick="descargarPDFPerfilamiento('${s.id}')">PDF</button>
+    `;
   }
 
-  // ❌ Botón Eliminar solo para admin
+  if (tableType === "radicacion") {
+    acciones += `
+      <button onclick="descargarPDFRadicacion('${s.id}')">PDF</button>
+    `;
+  }
+
   if (userRole === "admin") {
-    actionButtons += `
-    <button onclick="eliminarSolicitud('${solicitud.id}', ${isHistory})"
-      class="text-red-600 hover:text-red-900">
-      <i class="fas fa-trash"></i> Eliminar
-    </button>`;
+    acciones += `
+      <button onclick="eliminarSolicitud('${s.id}', ${isHistory})">Eliminar</button>
+    `;
   }
 
-  // ✅ Cerrar contenedor
-  actionButtons += `</div>`;
-
-  // --- Retornar fila ---
   return `
     <tr>
-      <td class="px-6 py-4 text-sm">${formatDate(solicitud.fecha)}</td>
-      <td class="px-6 py-4 text-sm">${obtenerNombreTipo(solicitud.tipo)}</td>
-      <td class="px-6 py-4 text-sm whitespace-nowrap">${solicitud.nombre}</td>
-      <td class="px-6 py-4 text-sm">${mainIdentifier || "N/A"}</td>
-      ${extraColsHtml}
-      <td class="px-6 py-4 text-sm">
-        ${estadoHtml}
-        ${solicitud.cambiadopor
-      ? `<br><small>(${solicitud.cambiadopor})</small>`
-      : ""
-    }
+      <td>${formatDate(s.fecha)}</td>
+      <td>${obtenerNombreTipo(s.tipo)}</td>
+      <td>${s.nombre}</td>
+      <td>${identificador}</td>
+      ${extraCols}
+      <td>
+        ${estadoHTML}
+        ${s.cambiadopor ? `<br><small>${s.cambiadopor}</small>` : ""}
       </td>
-      <td class="px-6 py-4 text-sm">${actionButtons}</td>
-    </tr>`;
+      <td>${acciones}</td>
+    </tr>
+  `;
 }
 
-// --- Listeners en tiempo real con Supabase ---
-// --- 🔔 LISTENERS EN TIEMPO REAL CON SUPABASE (Versión Mejorada) ---
 async function initRealtimeListeners() {
+
   if (window.__realtimeStarted) return;
   window.__realtimeStarted = true;
 
   if (!isAuthenticated()) return;
 
-  const rol = getUserRole(); // admin u operativo
-
-  // ---------------- LISTENERS EN TIEMPO REAL ----------------
-
-  // 🟩 PERFILAMIENTO
+  // ---------------- PERFILAMIENTO ----------------
   supabaseClient
     .channel("perfilamiento-changes")
     .on(
       "postgres_changes",
-      { event: "INSERT", schema: "public", table: "solicitudes" },
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "solicitudes"
+      },
       async (payload) => {
+
         const nueva = payload.new;
-        if (
-          ["credivillas", "libranza", "hipotecario", "tarjetas"].includes(
-            nueva.tipo
-          )
-        ) {
+
+        if ([
+          "credivillas",
+          "libranza",
+          "hipotecario",
+          "tarjetas"
+        ].includes(nueva.tipo)) {
+
           invalidateTab("perfilamiento");
+
           if (__getActiveAdminTabId() === "perfilamiento") {
             await ensureTabData("perfilamiento", { force: true });
-          } // 🔹 Solo recarga la vista
+          }
         }
       }
     )
     .subscribe();
 
-  // 🟦 RADICACIÓN
+
+  // ---------------- RADICACIÓN ----------------
   supabaseClient
     .channel("radicacion-changes")
     .on(
       "postgres_changes",
-      { event: "INSERT", schema: "public", table: "solicitudes" },
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "solicitudes"
+      },
       async (payload) => {
+
         const nueva = payload.new;
+
         if (nueva.tipo === "radicacion") {
+
           invalidateTab("radicacion");
+
           if (__getActiveAdminTabId() === "radicacion") {
             await ensureTabData("radicacion", { force: true });
-          } // 🔹 Solo recarga la vista
+          }
         }
       }
     )
     .subscribe();
 
-  // 💼 TRABAJA CON NOSOTROS
-  supabaseClient
-    .channel("trabaja-nosotros-changes")
-    .on(
-      "postgres_changes",
-      { event: "INSERT", schema: "public", table: "solicitudes" },
-      async (payload) => {
-        const nueva = payload.new;
-        if (nueva.tipo === "trabaja-nosotros") {
-          invalidateTab("trabaja-nosotros");
-          if (__getActiveAdminTabId() === "trabaja-nosotros") {
-            await ensureTabData("trabaja-nosotros", { force: true });
-          } // 🔹 Solo recarga la vista
-        }
-      }
-    )
-    .subscribe();
 
-  // 🟧 HISTORIAL
+  // ---------------- HISTORIAL ----------------
   supabaseClient
     .channel("historial-changes")
     .on(
       "postgres_changes",
-      { event: "*", schema: "public", table: "historial_clientes" },
+      {
+        event: "*",
+        schema: "public",
+        table: "historial_clientes"
+      },
       async () => {
+
         invalidateTab("historial");
+
         if (__getActiveAdminTabId() === "historial") {
           await ensureTabData("historial", { force: true });
         }
@@ -4033,206 +2687,134 @@ async function initRealtimeListeners() {
     )
     .subscribe();
 
-  // 🟪 CRÉDITOS RADICADOS
-  supabaseClient
-    .channel("creditos-radicados-changes")
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "creditos_radicados" },
-      async () => {
-        invalidateTab("creditos");
-        if (__getActiveAdminTabId() === "creditos") {
-          await ensureTabData("creditos", { force: true });
-        }
-      }
-    )
-    .subscribe();
 
-  // 🟫 ASESORES
+  // ---------------- ASESORES ----------------
   supabaseClient
     .channel("asesores-changes")
     .on(
       "postgres_changes",
-      { event: "*", schema: "public", table: "asesores" },
-      async (payload) => {
-        console.log("👀 Cambio detectado en asesores:", payload.eventType);
-        const cedulaFiltro =
-          $("buscar-cedula")?.value.trim() || "";
-        const estadoFiltro =
-          $("filtro-estado")?.value || "";
-        await cargarAsesores(cedulaFiltro, estadoFiltro);
+      {
+        event: "*",
+        schema: "public",
+        table: "asesores"
+      },
+      async () => {
+
+        const cedula = $("buscar-cedula")?.value.trim() || "";
+        const estado = $("filtro-estado")?.value || "";
+
+        await cargarAsesores(cedula, estado);
       }
     )
     .subscribe();
 
-  console.log("✅ Realtime listeners inicializados correctamente");
+
+  console.log("✅ Realtime limpio funcionando");
 }
-
-// ============================================================
-// 📤 ENVÍO DE FORMULARIO — Crear o Actualizar Crédito
-// ============================================================
-document
-  .getElementById("creditos-form")
-  .addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const formData = new FormData(e.target);
-
-    if (creditoEditando) {
-      // --- ACTUALIZAR ---
-      await actualizarCredito(creditoEditando, formData);
-      creditoEditando = null;
-      e.target.querySelector("button[type='submit']").textContent =
-        "Guardar Crédito";
-    } else {
-      // --- CREAR ---
-      await guardarCredito(formData);
-    }
-
-    // Resetear formulario y ocultar
-    e.target.reset();
-    $("form-creditos").classList.add("hidden");
-
-    // 🔁 Reaplicar filtros actuales (sin recargar)
-    const filtrosPrevios = cargarFiltrosDesdeMemoria();
-    if (filtrosPrevios) {
-      restaurarFiltrosGuardados(filtrosPrevios);
-      await aplicarFiltrosCreditos();
-    }
-  });
+``
 
 // Toggle formulario
 $("btn-toggle-form").addEventListener("click", () => {
-  $("form-creditos").classList.toggle("hidden");
+  $("form-perfilamiento").classList.toggle("hidden");
 });
 
-// Mostrar / ocultar formulario de asesores
-document
-  .getElementById("btn-toggle-form-asesor")
-  ?.addEventListener("click", () => {
-    const form = $("form-asesor");
-    if (!form) return;
+$("btn-toggle-form-asesor")?.addEventListener("click", () => {
+  $("form-asesor")?.classList.toggle("hidden");
+});
 
-    const visible = !form.classList.contains("hidden");
-    if (visible) {
-      form.classList.add("hidden");
-    } else {
-      form.classList.remove("hidden");
-    }
-  });
-// --- Buscar en historial ---
 function buscarHistorial() {
-  const filtro = document
-    .getElementById("historial-cedula-search")
-    .value.toLowerCase()
-    .trim();
-  const filas = $$(
-    "#solicitudes-table-body-historial tr"
-  );
 
-  filas.forEach((fila) => {
-    const celdaCedula = fila.querySelector("td:nth-child(4)"); // Asumiendo que la cédula/email está en la 4ta columna
-    const textoCedula = celdaCedula
-      ? celdaCedula.textContent.toLowerCase()
-      : "";
+  const filtro = $("historial-cedula-search")
+    .value.toLowerCase().trim();
 
-    fila.style.display =
-      filtro === "" || textoCedula.includes(filtro) ? "" : "none";
-  });
+  document.querySelectorAll("#solicitudes-table-body-historial tr")
+    .forEach(fila => {
+
+      const texto = fila.children[3]?.textContent.toLowerCase() || "";
+
+      fila.style.display =
+        (!filtro || texto.includes(filtro)) ? "" : "none";
+    });
 }
 
 // --- Buscar cliente para radicación ---
 async function buscarClienteParaRadicacion() {
-  const cedulaInput = $("radicacion-cedula-cliente");
-  const cedulaStatusDiv = $("radicacion-cedula-status");
-  const cedula = cedulaInput.value.trim();
 
-  cedulaStatusDiv.innerHTML = "";
-  cedulaStatusDiv.className = "";
+  const cedula = $("radicacion-cedula-cliente").value.trim();
+  const status = $("radicacion-cedula-status");
+
+  status.innerHTML = "";
+  status.className = "";
 
   if (!cedula) {
-    cedulaStatusDiv.textContent = "❌ Por favor, ingrese una cédula.";
-    cedulaStatusDiv.className = "bg-red-100 text-red-700 px-3 py-2 rounded mt-2";
+    status.textContent = "❌ Ingresa una cédula";
+    status.className = "bg-red-100 text-red-700 p-2 rounded";
     limpiarCamposRadicacion();
     deshabilitarCamposRadicacion();
-    setCamposPerfilamientoRadicacionLocked(true);
-    marcarPerfilamientoRadicacionCargado(false);
-    setCamposPerfilamientoRadicacionLocked(true);
-    marcarPerfilamientoRadicacionCargado(false);
     return;
   }
 
-  cedulaStatusDiv.textContent = "🔎 Buscando cliente...";
-  cedulaStatusDiv.className = "bg-blue-100 text-blue-700 px-3 py-2 rounded mt-2";
+  status.textContent = "🔎 Buscando...";
+  status.className = "bg-blue-100 text-blue-700 p-2 rounded";
 
   try {
-    // Buscar en historial_clientes por cédula y tipos de perfilamiento "Realizado"
+
     const { data, error } = await supabaseClient
       .from("historial_clientes")
       .select("*")
       .eq("documento", cedula)
-      .in("tipo", ["credivillas", "libranza", "hipotecario", "tarjetas"])
+      .in("tipo", ["credivillas","libranza","hipotecario","tarjetas"])
       .eq("estado", "Realizado")
-      .order("fecha", { ascending: false })
+      .order("fecha", { ascending:false })
       .limit(1);
 
     if (error) throw error;
 
-    if (!data || data.length === 0) {
-      cedulaStatusDiv.textContent =
-        "⚠️ El cliente no tiene perfilamiento en estado Realizado. No se puede radicar.";
-      cedulaStatusDiv.className = "bg-red-100 text-red-700 px-3 py-2 rounded mt-2";
+    if (!data?.length) {
+      status.textContent = "⚠️ Cliente sin perfilamiento aprobado";
+      status.className = "bg-red-100 text-red-700 p-2 rounded";
       limpiarCamposRadicacion();
       deshabilitarCamposRadicacion();
-      setCamposPerfilamientoRadicacionLocked(true);
-      marcarPerfilamientoRadicacionCargado(false);
       return;
     }
 
-    const datosCliente = data[0].datos || {};
+    const d = data[0].datos || {};
 
-    // Datos personales
-    $("radicacion-apellido1").value = datosCliente["apellido1"] || "";
-    $("radicacion-apellido2").value = datosCliente["apellido2"] || "";
-    $("radicacion-nombre1").value = datosCliente["nombre1"] || "";
-    $("radicacion-nombre2").value = datosCliente["nombre2"] || "";
-    $("radicacion-fecha-nacimiento").value = datosCliente["fecha-nacimiento"] || "";
+    // ✅ AUTOCARGA
+    $("radicacion-apellido1").value = d["apellido1"] || "";
+    $("radicacion-apellido2").value = d["apellido2"] || "";
+    $("radicacion-nombre1").value = d["nombre1"] || "";
+    $("radicacion-nombre2").value = d["nombre2"] || "";
+    $("radicacion-fecha-nacimiento").value = d["fecha-nacimiento"] || "";
 
-    // Estado civil
-    const estadoSelect = $("radicacion-estado");
-    if (estadoSelect) {
-      const normalizedEstado = (datosCliente["estado"] || "")
+    $("radicacion-telefono").value = d["telefono"] || "";
+    $("radicacion-ciudad-residencia").value = d["ciudad-residencia"] || "";
+    $("radicacion-correo-electronico").value = d["email"] || "";
+
+    $("radicacion-direccion-residencia").value =
+      d["direccion-cliente"] || d["direccion"] || "";
+
+    $("radicacion-barrio").value = d["barrio"] || "";
+
+    // ✅ ESTADO CIVIL NORMALIZADO
+    const estado = $("radicacion-estado");
+    if (estado) {
+      estado.value = (d["estado"] || "")
         .toLowerCase()
         .replace(/ /g, "-")
         .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/\//g, "");
-
-      estadoSelect.value = normalizedEstado;
+        .replace(/[\u0300-\u036f]/g, "");
     }
 
-    // Contacto y residencia
-    $("radicacion-telefono").value = datosCliente["telefono"] || "";
-    $("radicacion-ciudad-residencia").value = datosCliente["ciudad-residencia"] || "";
-    $("radicacion-correo-electronico").value = datosCliente["email"] || "";
-    $("radicacion-direccion-residencia").value =
-      datosCliente["direccion-cliente"] ||
-      datosCliente["direccion-residencia"] ||
-      datosCliente["direccion"] ||
-      "";
+    status.textContent = "✅ Cliente cargado";
+    status.className = "bg-green-100 text-green-700 p-2 rounded";
 
-    $("radicacion-barrio").value =
-      datosCliente["barrio"] || "";
-
-
-    cedulaStatusDiv.textContent = "✅ Cliente encontrado y datos importados correctamente.";
-    cedulaStatusDiv.className = "bg-green-100 text-green-700 px-3 py-2 rounded mt-2";
     habilitarCamposRadicacion();
-    setCamposPerfilamientoRadicacionLocked(true);
-    marcarPerfilamientoRadicacionCargado(true);
+
   } catch (e) {
-    console.error("Error buscando cliente: ", e);
-    cedulaStatusDiv.textContent = "❌ Error al buscar el cliente.";
-    cedulaStatusDiv.className = "bg-red-100 text-red-700 px-3 py-2 rounded mt-2";
+    console.error(e);
+    status.textContent = "❌ Error buscando cliente";
+    status.className = "bg-red-100 text-red-700 p-2 rounded";
     limpiarCamposRadicacion();
     deshabilitarCamposRadicacion();
   }
@@ -4240,7 +2822,8 @@ async function buscarClienteParaRadicacion() {
 
 // --- Limpiar campos radicación ---
 function limpiarCamposRadicacion() {
-  const fieldsToClear = [
+
+  [
     "radicacion-apellido1",
     "radicacion-apellido2",
     "radicacion-nombre1",
@@ -4250,33 +2833,30 @@ function limpiarCamposRadicacion() {
     "radicacion-telefono",
     "radicacion-ciudad-residencia",
     "radicacion-correo-electronico",
-    "direccion-cliente",
-    "barrio",
+    "radicacion-direccion-residencia",
+    "radicacion-barrio",
+
     "nombre-referencia1",
     "telefono-referencia1",
     "parentesco-referencia1",
     "direccion-referencia1",
-    "departamento-referencia1",
-    "ciudad-referencia1",
+
     "nombre-referencia2",
     "telefono-referencia2",
     "parentesco-referencia2",
     "direccion-referencia2",
-    "departamento-referencia2",
-    "ciudad-referencia2",
+
     "nombre-referencia3",
     "telefono-referencia3",
-    "departamento-referencia3",
-    "ciudad-referencia3",
+
     "nombre-beneficiario",
     "cedula-beneficiario",
     "parentesco-beneficiario",
-    "tipo-radicacion",
-  ];
 
-  fieldsToClear.forEach((id) => {
-    const campo = document.getElementById(id);
-    if (campo) campo.value = "";
+    "tipo-radicacion"
+  ].forEach(id => {
+    const el = $(id);
+    if (el) el.value = "";
   });
 }
 
@@ -4334,1366 +2914,569 @@ async function buscarAsesorPorCedula(cedula, formId) {
   }, 250); // ⏱️ ajusta 200-400ms si quieres
 }
 
-// --- Funciones de Interacción de UI (Tabs, Menús, Campos Dinámicos) ---
-// Estas funciones no necesitan cambios ya que solo manejan la UI y no el almacenamiento.
-
 function setupFormTabs() {
-  const tabButtons = $$(".tab-btn");
-  tabButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      tabButtons.forEach((btn) => btn.classList.remove("active-tab"));
-      button.classList.add("active-tab");
 
-      $$(".form-section").forEach((section) => {
-        section.classList.remove("form-visible");
-        section.classList.add("form-hidden");
+  $$(".tab-btn").forEach(btn => {
+
+    btn.addEventListener("click", () => {
+
+      $$(".tab-btn").forEach(b => b.classList.remove("active-tab"));
+      btn.classList.add("active-tab");
+
+      $$(".form-section").forEach(sec => {
+        sec.classList.add("form-hidden");
+        sec.classList.remove("form-visible");
       });
 
-      const tabId = button.getAttribute("data-tab");
-      const formSection = document.getElementById(tabId);
-      if (formSection) {
-        formSection.classList.remove("form-hidden");
-        formSection.classList.add("form-visible");
+      const id = btn.dataset.tab;
+      const target = $(id);
+
+      if (target) {
+        target.classList.remove("form-hidden");
+        target.classList.add("form-visible");
       }
     });
   });
 }
-
 function showAdminContent(tabId) {
-  const userRole = getUserRole();
 
-  const allowedOperativoTabs = [
+  const role = getUserRole();
+
+  const allowedTabs = [
     "perfilamiento",
     "radicacion",
     "historial",
-    "creditos",
-    "asesores",
-    "fichas-cuentas",
-    "simulador"
+    "asesores"
   ];
 
-  // Ocultar todas las secciones de contenido del admin
-  $$(".admin-content-section").forEach((section) => {
-    section.classList.add("hidden");
-  });
+  // ocultar todo
+  $$(".admin-content-section").forEach(s => s.classList.add("hidden"));
 
-  // Ocultar todos los botones de tab del admin
-  $$(".admin-tab-btn").forEach((btn) => {
-    btn.classList.remove("active-tab", "bg-blue-600", "text-white");
-    btn.classList.add("bg-gray-300", "text-gray-700");
+  $$(".admin-tab-btn").forEach(btn => {
+    btn.classList.remove("active-tab","bg-blue-600","text-white");
+    btn.classList.add("bg-gray-300","text-gray-700");
     btn.classList.add("hidden");
   });
 
-  // ADMIN: ve todo
-  if (userRole === "admin") {
-    const targetSection = document.getElementById(`admin-content-${tabId}`);
-    if (targetSection) {
-      targetSection.classList.remove("hidden");
-    }
+  // ✅ ADMIN ve todo
+  if (role === "admin") {
 
-    $$(".admin-tab-btn").forEach((btn) => {
-      btn.classList.remove("hidden");
-    });
+    $(`admin-content-${tabId}`)?.classList.remove("hidden");
+
+    $$(".admin-tab-btn").forEach(btn => btn.classList.remove("hidden"));
   }
 
-  // OPERATIVO: ve solo ciertas pestañas
-  else if (userRole === "operativo") {
-    const tabPermitido = allowedOperativoTabs.includes(tabId);
+  // ✅ OPERATIVO limitado
+  else if (role === "operativo") {
 
-    if (tabPermitido) {
-      const targetSection = document.getElementById(`admin-content-${tabId}`);
-      if (targetSection) {
-        targetSection.classList.remove("hidden");
-      }
-    } else {
+    if (!allowedTabs.includes(tabId)) {
       tabId = "perfilamiento";
-      const fallbackSection = document.getElementById("admin-content-perfilamiento");
-      if (fallbackSection) {
-        fallbackSection.classList.remove("hidden");
-      }
     }
 
-    // Mostrar solo los botones permitidos para operativo
-    allowedOperativoTabs.forEach((tab) => {
-      const btn = document.querySelector(`.admin-tab-btn[data-tab="${tab}"]`);
-      if (btn) {
-        btn.classList.remove("hidden");
-      }
+    $(`admin-content-${tabId}`)?.classList.remove("hidden");
+
+    allowedTabs.forEach(tab => {
+      document
+        .querySelector(`.admin-tab-btn[data-tab="${tab}"]`)
+        ?.classList.remove("hidden");
     });
   }
 
-  // Si quieres que otros roles no vean nada, aquí puedes controlarlo
+  // ✅ DEFAULT
   else {
-    const fallbackSection = document.getElementById("admin-content-perfilamiento");
-    if (fallbackSection) {
-      fallbackSection.classList.remove("hidden");
-    }
-
-    const btn = document.querySelector('.admin-tab-btn[data-tab="perfilamiento"]');
-    if (btn) {
-      btn.classList.remove("hidden");
-    }
-
     tabId = "perfilamiento";
+
+    $("admin-content-perfilamiento")?.classList.remove("hidden");
+
+    document
+      .querySelector(`.admin-tab-btn[data-tab="perfilamiento"]`)
+      ?.classList.remove("hidden");
   }
 
-  // Activar el botón de la pestaña seleccionada
-  const activeTabButton = qs(`.admin-tab-btn[data-tab="${tabId}"]`);
-  if (activeTabButton) {
-    activeTabButton.classList.add("active-tab", "bg-blue-600", "text-white");
-    activeTabButton.classList.remove("bg-gray-300", "text-gray-700");
+  // ✅ activar botón
+  const activeBtn = qs(`.admin-tab-btn[data-tab="${tabId}"]`);
+
+  if (activeBtn) {
+    activeBtn.classList.add("active-tab","bg-blue-600","text-white");
+    activeBtn.classList.remove("bg-gray-300","text-gray-700");
   }
 }
-
 function setupAdminTabs() {
-  const adminTabButtons = $$(".admin-tab-btn");
-  adminTabButtons.forEach((button) => {
-    button.addEventListener("click", async () => {
-      const tabId = button.getAttribute("data-tab");
-      showAdminContent(tabId);
-      // ✅ Cargar datos SOLO cuando el usuario abre la pestaña
-      await ensureTabData(tabId);
+
+  $$(".admin-tab-btn").forEach(btn => {
+
+    btn.addEventListener("click", async () => {
+
+      const tab = btn.dataset.tab;
+
+      showAdminContent(tab);
+
+      // 🔥 carga bajo demanda
+      await ensureTabData(tab);
     });
   });
 }
 
 function setupMobileMenu() {
-  const menuButton = $("mobile-menu-button");
-  const mobileMenu = $("mobile-menu");
 
-  menuButton.addEventListener("click", () => {
-    mobileMenu.classList.toggle("hidden");
+  const btn = $("mobile-menu-button");
+  const menu = $("mobile-menu");
+
+  if (!btn || !menu) return;
+
+  btn.addEventListener("click", () => {
+    menu.classList.toggle("hidden");
   });
 
-  mobileMenu.querySelectorAll("a").forEach((link) => {
+  menu.querySelectorAll("a").forEach(link => {
     link.addEventListener("click", () => {
-      mobileMenu.classList.add("hidden");
+      menu.classList.add("hidden");
     });
   });
-}
+} 
 
 function setupAdminAccess() {
+
   const adminLink = $("admin-link");
   const mobileAdminLink = $("mobile-admin-link");
-  const adminDashboardLink = $("admin-dashboard-link");
-  const mobileAdminDashboardLink = $("mobile-admin-dashboard-link");
   const logoutBtn = $("logout-button");
   const mobileLogoutBtn = $("mobile-logout-button");
 
-  function handleAdminAccess() {
-    if (isAuthenticated()) {
-      showSection("admin");
-      showAdminPanel();
-      // Asegurarse de que la pestaña "Perfilamiento" esté activa al entrar al admin
-      const creditosTabButton = qs(
-        '.admin-tab-btn[data-tab="creditos"]'
-      );
-      if (creditosTabButton) {
-        creditosTabButton.click();
-      }
-    } else {
+  function entrarAdmin() {
+
+    if (!isAuthenticated()) {
       showLoginModal();
-      if (adminDashboardLink) adminDashboardLink.classList.add("hidden");
-      if (mobileAdminDashboardLink)
-        mobileAdminDashboardLink.classList.add("hidden");
+      return;
     }
+
+    showSection("admin");
+    showAdminPanel();
+
+    // ✅ TAB CORRECTO
+    qs('.admin-tab-btn[data-tab="perfilamiento"]')?.click();
   }
 
-  adminLink.addEventListener("click", (e) => {
+  adminLink?.addEventListener("click", e => {
     e.preventDefault();
-    handleAdminAccess();
+    entrarAdmin();
   });
 
-  mobileAdminLink.addEventListener("click", (e) => {
+  mobileAdminLink?.addEventListener("click", e => {
     e.preventDefault();
-    handleAdminAccess();
+    entrarAdmin();
   });
 
-  if (adminDashboardLink) {
-    adminDashboardLink.addEventListener("click", (e) => {
-      e.preventDefault();
-      handleAdminAccess();
-    });
-  }
-
-  if (mobileAdminDashboardLink) {
-    mobileAdminDashboardLink.addEventListener("click", (e) => {
-      e.preventDefault();
-      handleAdminAccess();
-    });
-  }
-
-  logoutBtn.addEventListener("click", (e) => {
+  logoutBtn?.addEventListener("click", e => {
     e.preventDefault();
     logout();
   });
 
-  mobileLogoutBtn.addEventListener("click", (e) => {
+  mobileLogoutBtn?.addEventListener("click", e => {
     e.preventDefault();
     logout();
   });
 }
-
-function setupLoginForm() {
-  const loginForm = $("login-form");
-
-  loginForm.addEventListener("submit", async (e) => {
-    // Marcado como async
-    e.preventDefault();
-
-    const username = $("username").value;
-    const password = $("password").value;
-    const errorElement = $("login-error");
-
-    const success = await login(username, password); // Esperar el resultado del login
-
-    if (success) {
-      hideLoginModal();
-      updateAuthUI();
-      if (window.location.hash !== "#admin") {
-        window.location.hash = "#admin";
-      } else {
-        showSection("admin");
-        showAdminPanel();
-      }
-      // Asegurarse de que la pestaña "Perfilamiento" esté activa al iniciar sesión
-      const perfilamientoTabButton = qs(
-        '.admin-tab-btn[data-tab="creditos"]'
-      );
-      if (perfilamientoTabButton) {
-        perfilamientoTabButton.click();
-      }
-    } else {
-      errorElement.classList.remove("hidden");
-    }
-  });
-}
+``
 
 function showSection(sectionId) {
-  // ✅ Bloquear secciones de crédito al público.
-  // Solo deben estar disponibles dentro de la sesión del rol "comercial".
-  const seccionesSoloComercial = ["formularios", "formulario2", "consulta-credito"];
-  const rolesPermitidos = ["comercial", "admin", "operativo"];
 
-  if (seccionesSoloComercial.includes(sectionId)) {
-    if (!isAuthenticated() || !rolesPermitidos.includes(getUserRole())) {
-      mostrarMensaje(
-        null,
-        "error",
-        "Debes iniciar sesión (comercial, admin u operativo) para acceder a esta sección."
-      );
+  // ✅ Secciones públicas reales
+  const secciones = [
+    "inicio",
+    "admin"
+  ];
+
+  // ✅ Si no existe → fallback
+  if (!secciones.includes(sectionId)) {
+    sectionId = "inicio";
+  }
+
+  // ✅ CONTROL DE ACCESO AL ADMIN
+  if (sectionId === "admin") {
+    if (!isAuthenticated()) {
+      mostrarMensaje(null, "error", "Debes iniciar sesión.");
       sectionId = "inicio";
     }
   }
 
+  // ✅ MOSTRAR / OCULTAR
+  secciones.forEach(id => {
+    const el = $(id);
+    if (!el) return;
 
-  const mainSections = [
-    "inicio",
-    "sobre-nosotros",
-    "trabaja-nosotros",
-    "formularios",
-    "formulario2",
-    "consulta-credito",
-    "contacto",
-    "admin",
-    "seccion-comercial",
-  ];
-  mainSections.forEach((id) => {
-    const section = document.getElementById(id);
-    if (section) {
-      if (id === sectionId) {
-        section.classList.remove("hidden");
-      } else {
-        section.classList.add("hidden");
-      }
-    }
+    el.classList.toggle("hidden", id !== sectionId);
   });
 }
-
-// 🔗 Navegación desde el panel comercial (actualiza hash + muestra sección)
 function navigateToSection(sectionId) {
+
   showSection(sectionId);
+
   window.location.hash = sectionId;
-  // Scroll suave al inicio de la sección
-  document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth" });
-}
 
+  document.getElementById(sectionId)
+    ?.scrollIntoView({ behavior: "smooth" });
+}
 function setupDynamicFields() {
-  document
-    .querySelectorAll('select[name="destino-credito"]')
-    .forEach((selectElement) => {
-      if (!selectElement.dataset.listenerAttached) {
-        selectElement.addEventListener("change", function () {
-          const form = this.closest("form");
-          const entidadesContainer = form.querySelector(".entidades-container");
 
-          if (!entidadesContainer) return; // Asegurarse de que el contenedor exista
+  document.querySelectorAll('select[name="destino-credito"]')
+    .forEach(select => {
 
-          const destinoCredito = this.value;
+      if (select.dataset.listenerAttached) return;
 
-          // Limpiar el contenido actual del contenedor
-          entidadesContainer.innerHTML = "";
+      select.addEventListener("change", function () {
 
-          if (destinoCredito === "libre") {
-            entidadesContainer.innerHTML = `
-                            <label class="block text-gray-700 mb-2">Entidades a Comprar *</label>
-                            <input type="text" name="entidad-compra" value="NO APLICA" readonly
-                                class="w-full px-4 py-2 border rounded-lg bg-gray-100 text-gray-500">
-                        `;
-          } else if (destinoCredito === "compra") {
-            entidadesContainer.innerHTML = `
-                            <label class="block text-gray-700 mb-2">Entidades a Comprar *</label>
-                            <input type="text" name="entidad-compra" required
-                                placeholder="ESCRIBA LAS ENTIDADES A COMPRAR..."
-                                class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
-                        `;
-          } else if (
-            destinoCredito === "usada" ||
-            destinoCredito === "nueva" ||
-            destinoCredito === "leasing"
-          ) {
-            // Para hipotecario, también "NO APLICA"
-            entidadesContainer.innerHTML = `
-                            <label class="block text-gray-700 mb-2">Entidades a Comprar *</label>
-                            <input type="text" name="entidad-compra" value="NO APLICA" readonly
-                                class="w-full px-4 py-2 border rounded-lg bg-gray-100 text-gray-500">
-                        `;
-          } else {
-            // Valor por defecto si no es ninguno de los anteriores (ej. si el select se resetea)
-            entidadesContainer.innerHTML = `
-                            <label class="block text-gray-700 mb-2">Entidades a Comprar *</label>
-                            <select name="entidad-compra" required
-                                    class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
-                                <option value="">SELECCIONE...</option>
-                                <option value="no-aplica">NO APLICA</option>
-                                <option value="si">SI</option>
-                            </select>
-                        `;
-          }
-        });
-        selectElement.dataset.listenerAttached = "true";
-      }
-    });
+        const container =
+          this.closest("form")?.querySelector(".entidades-container");
 
-  $$(".form-section").forEach((formSection) => {
-    const tipoContratoSelect = formSection.querySelector(
-      'select[name="tipo-contrato"]'
-    );
-    if (tipoContratoSelect && !tipoContratoSelect.dataset.listenerAttached) {
-      tipoContratoSelect.addEventListener("change", function () {
-        const parentDiv = this.closest("div");
-        // Only if the "otra" option exists and is selected
-        if (
-          this.querySelector('option[value="otra"]') &&
-          this.value === "otra"
-        ) {
-          parentDiv.innerHTML = `
-                        <label class="block text-gray-700 mb-2">Tipo de Contrato *</label>
-                        <input type="text" name="tipo-contrato" required
-                            placeholder="ESCRIBA EL TIPO DE CONTRATO..."
-                            class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
-                    `;
+        if (!container) return;
+
+        const v = this.value;
+
+        if (["libre","usada","nueva","leasing"].includes(v)) {
+
+          container.innerHTML = `
+            <label>Entidades</label>
+            <input type="text" value="NO APLICA" readonly>
+          `;
+
+        } else if (v === "compra") {
+
+          container.innerHTML = `
+            <label>Entidades</label>
+            <input type="text" name="entidad-compra" required>
+          `;
+
+        } else {
+
+          container.innerHTML = `
+            <select name="entidad-compra">
+              <option value="">Seleccione</option>
+              <option value="no-aplica">No aplica</option>
+            </select>
+          `;
         }
-      });
-      tipoContratoSelect.dataset.listenerAttached = "true";
-    }
-  });
-}
 
+      });
+
+      select.dataset.listenerAttached = "true";
+    });
+} 
 function setupPlazos() {
-  // Credivillas
-  document
-    .querySelectorAll('#credivillas select[name="plazo"]')
-    .forEach((select) => {
-      [12, 24, 36, 48, 60, 72].forEach((m) => {
-        const opt = document.createElement("option");
-        opt.value = m;
-        opt.textContent = m;
-        select.appendChild(opt);
+
+  const configs = {
+    credivillas: [12,24,36,48,60,72],
+    libranza: Array.from({length:12}, (_,i)=> (i+1)*12),
+    hipotecario: Array.from({length:20}, (_,i)=> (i+1)*12)
+  };
+
+  Object.entries(configs).forEach(([tipo, valores]) => {
+
+    document
+      .querySelectorAll(`#${tipo} select[name="plazo"]`)
+      .forEach(select => {
+
+        valores.forEach(v => {
+          const opt = document.createElement("option");
+          opt.value = v;
+          opt.textContent = v;
+          select.appendChild(opt);
+        });
+
       });
-    });
-
-  // Libranza
-  document
-    .querySelectorAll('#libranza select[name="plazo"]')
-    .forEach((select) => {
-      for (let m = 12; m <= 144; m += 12) {
-        const opt = document.createElement("option");
-        opt.value = m;
-        opt.textContent = m;
-        select.appendChild(opt);
-      }
-    });
-
-  // Hipotecario
-  document
-    .querySelectorAll('#hipotecario select[name="plazo"]')
-    .forEach((select) => {
-      for (let m = 12; m <= 240; m += 12) {
-        const opt = document.createElement("option");
-        opt.value = m;
-        opt.textContent = m;
-        select.appendChild(opt);
-      }
-    });
-
-  // Tarjetas (ya está deshabilitado en el HTML)
-}
+  });
+} 
 function setupActividadEconomica() {
-  document
-    .querySelectorAll('select[name="actividad-economica"]')
-    .forEach((select) => {
-      select.addEventListener("change", () => {
-        const formSection = select.closest("form"); // busca dentro del formulario actual
-        // const formId = formSection.closest(".form-section").id; // Obtener el ID del formulario (credivillas, libranza, etc.) - This variable is not used.
 
-        const fieldsToDisableForPensionado = [
+  document.querySelectorAll('select[name="actividad-economica"]')
+    .forEach(select => {
+
+      select.addEventListener("change", () => {
+
+        const form = select.closest("form");
+
+        const campos = [
           "tipo-contrato",
           "nit-empresa",
           "telefono-empresa",
-          "ciudad-empresa",
+          "ciudad-empresa"
         ];
 
-        // Deshabilitar campos para "Pensionado" en todos los formularios
-        fieldsToDisableForPensionado.forEach((name) => {
-          const field = formSection.querySelector(`[name="${name}"]`);
-          if (field) {
-            if (select.value === "pensionado") {
-              field.disabled = true;
-              field.classList.add("bg-gray-100", "cursor-not-allowed");
-              field.removeAttribute("required");
-              field.value = ""; // Limpiar el valor
-            } else {
-              field.disabled = false;
-              field.classList.remove("bg-gray-100", "cursor-not-allowed");
-              field.setAttribute("required", "required");
-            }
+        campos.forEach(name => {
+
+          const field = form.querySelector(`[name="${name}"]`);
+          if (!field) return;
+
+          const bloquear =
+            select.value === "pensionado" ||
+            select.value === "rentista";
+
+          field.disabled = bloquear;
+
+          field.classList.toggle("bg-gray-100", bloquear);
+
+          if (bloquear) {
+            field.value = "";
+            field.removeAttribute("required");
+          } else {
+            field.setAttribute("required","required");
           }
         });
-
-        // Lógica específica para "Rentista de Capital"
-        const tipoContratoField = formSection.querySelector(
-          '[name="tipo-contrato"]'
-        );
-        const nitEmpresaField = formSection.querySelector(
-          '[name="nit-empresa"]'
-        );
-        const telefonoEmpresaField = formSection.querySelector(
-          '[name="telefono-empresa"]'
-        );
-        const ciudadEmpresaField = formSection.querySelector(
-          '[name="ciudad-empresa"]'
-        );
-
-        if (select.value === "rentista") {
-          if (tipoContratoField) {
-            tipoContratoField.disabled = true;
-            tipoContratoField.classList.add(
-              "bg-gray-100",
-              "cursor-not-allowed"
-            );
-            tipoContratoField.removeAttribute("required");
-            tipoContratoField.value = "";
-          }
-          if (nitEmpresaField) {
-            nitEmpresaField.disabled = true;
-            nitEmpresaField.classList.add("bg-gray-100", "cursor-not-allowed");
-            nitEmpresaField.removeAttribute("required");
-            nitEmpresaField.value = "";
-          }
-          if (telefonoEmpresaField) {
-            telefonoEmpresaField.disabled = true;
-            telefonoEmpresaField.classList.add(
-              "bg-gray-100",
-              "cursor-not-allowed"
-            );
-            telefonoEmpresaField.removeAttribute("required");
-            telefonoEmpresaField.value = "";
-          }
-          if (ciudadEmpresaField) {
-            ciudadEmpresaField.disabled = true;
-            ciudadEmpresaField.classList.add(
-              "bg-gray-100",
-              "cursor-not-allowed"
-            );
-            ciudadEmpresaField.removeAttribute("required");
-            ciudadEmpresaField.value = "";
-          }
-        } else if (select.value !== "pensionado") {
-          // Re-habilitar si no es pensionado ni rentista
-          if (tipoContratoField) {
-            tipoContratoField.disabled = false;
-            tipoContratoField.classList.remove(
-              "bg-gray-100",
-              "cursor-not-allowed"
-            );
-            tipoContratoField.setAttribute("required", "required");
-          }
-          if (nitEmpresaField) {
-            nitEmpresaField.disabled = false;
-            nitEmpresaField.classList.remove(
-              "bg-gray-100",
-              "cursor-not-allowed"
-            );
-            nitEmpresaField.setAttribute("required", "required");
-          }
-          if (telefonoEmpresaField) {
-            telefonoEmpresaField.disabled = false;
-            telefonoEmpresaField.classList.remove(
-              "bg-gray-100",
-              "cursor-not-allowed"
-            );
-            telefonoEmpresaField.setAttribute("required", "required");
-          }
-          if (ciudadEmpresaField) {
-            ciudadEmpresaField.disabled = false;
-            ciudadEmpresaField.classList.remove(
-              "bg-gray-100",
-              "cursor-not-allowed"
-            );
-            ciudadEmpresaField.setAttribute("required", "required");
-          }
-        }
       });
     });
 
-  // Lógica para deshabilitar campos de inmueble si el tipo de residencia es "Familiar"
-  document
-    .querySelectorAll('select[name="tipo-residencia"]')
-    .forEach((select) => {
-      select.addEventListener("change", () => {
-        const formSection = select.closest("form");
-        const valorInmuebleField = formSection.querySelector(
-          'input[name="valor-inmueble"]'
-        );
-        const tipoInmuebleField = formSection.querySelector(
-          'select[name="tipo-inmueble"]'
-        );
 
-        if (select.value === "familiar") {
-          if (valorInmuebleField) {
-            valorInmuebleField.disabled = true;
-            valorInmuebleField.classList.add(
-              "bg-gray-100",
-              "cursor-not-allowed"
-            );
-            valorInmuebleField.removeAttribute("required");
-            valorInmuebleField.value = "";
+  // ✅ RESIDENCIA
+  document.querySelectorAll('select[name="tipo-residencia"]')
+    .forEach(select => {
+
+      select.addEventListener("change", () => {
+
+        const form = select.closest("form");
+
+        const valor = form.querySelector('[name="valor-inmueble"]');
+        const tipo = form.querySelector('[name="tipo-inmueble"]');
+
+        const bloquear = select.value === "familiar";
+
+        [valor, tipo].forEach(f => {
+          if (!f) return;
+
+          f.disabled = bloquear;
+          f.classList.toggle("bg-gray-100", bloquear);
+
+          if (bloquear) {
+            f.value = "";
+            f.removeAttribute("required");
+          } else {
+            f.setAttribute("required","required");
           }
-          if (tipoInmuebleField) {
-            tipoInmuebleField.disabled = true;
-            tipoInmuebleField.classList.add(
-              "bg-gray-100",
-              "cursor-not-allowed"
-            );
-            tipoInmuebleField.removeAttribute("required");
-            tipoInmuebleField.value = "";
-          }
-        } else {
-          if (valorInmuebleField) {
-            valorInmuebleField.disabled = false;
-            valorInmuebleField.classList.remove(
-              "bg-gray-100",
-              "cursor-not-allowed"
-            );
-            valorInmuebleField.setAttribute("required", "required");
-          }
-          if (tipoInmuebleField) {
-            tipoInmuebleField.disabled = false;
-            tipoInmuebleField.classList.remove(
-              "bg-gray-100",
-              "cursor-not-allowed"
-            );
-            tipoInmuebleField.setAttribute("required", "required");
-          }
-        }
+        });
+
+      });
+    });
+} 
+
+function setupUppercaseInputs() {
+
+  document
+    .querySelectorAll('input[type="text"], textarea')
+    .forEach(input => {
+
+      if (input.type === "email" || input.id === "username") return;
+
+      input.addEventListener("input", function () {
+
+        const cursor = this.selectionStart;
+
+        this.value = this.value.toUpperCase();
+
+        // mantener cursor
+        this.setSelectionRange(cursor, cursor);
       });
     });
 }
+function applyRolePermissions() {
 
-// Función para convertir el texto de los inputs a mayúsculas
-function setupUppercaseInputs() {
-  document
-    .querySelectorAll('input[type="text"], input[type="email"], textarea')
-    .forEach((input) => {
-      // Excluir inputs de tipo email para no forzar mayúsculas en direcciones de correo
-      if (input.type !== "email" && input.id !== "username") {
-        input.addEventListener("input", function () {
-          this.value = this.value;
-        });
+  const role = getUserRole();
+
+  // ✅ SOLO deja lo que existe
+  const tablas = [
+    "#solicitudes-table-body-perfilamiento",
+    "#solicitudes-table-body-radicacion",
+    "#solicitudes-table-body-historial"
+  ];
+
+  tablas.forEach(selector => {
+
+    $$(selector + " .fa-trash").forEach(icon => {
+
+      const btn = icon.closest("button");
+      if (!btn) return;
+
+      if (role === "operativo") {
+        btn.disabled = true;
+        btn.classList.add("opacity-50","cursor-not-allowed");
+        btn.title = "Sin permisos";
+      } else {
+        btn.disabled = false;
+        btn.classList.remove("opacity-50","cursor-not-allowed");
+        btn.title = "";
       }
     });
-}
-
-// --- Nueva función para aplicar permisos según el rol ---
-function applyRolePermissions() {
-  const userRole = getUserRole();
-
-  // 1) Ocultar/mostrar pestaña y contenido "Trabaja con Nosotros"
-  const trabajaNosotrosTab = qs(
-    '.admin-tab-btn[data-tab="trabaja-nosotros"]'
-  );
-  const adminContentTrabajaNosotros = $("admin-content-trabaja-nosotros");
-
-  if (userRole === "operativo") {
-    if (trabajaNosotrosTab) trabajaNosotrosTab.classList.add("hidden");
-    if (adminContentTrabajaNosotros)
-      adminContentTrabajaNosotros.classList.add("hidden");
-  } else {
-    if (trabajaNosotrosTab) trabajaNosotrosTab.classList.remove("hidden");
-    if (adminContentTrabajaNosotros)
-      adminContentTrabajaNosotros.classList.remove("hidden");
-  }
-
-  // 2) Deshabilitar botones de eliminar para el rol 'operativo'
-  const deleteButtons = $$(
-    "#solicitudes-table-body-perfilamiento .fa-trash, " +
-    "#solicitudes-table-body-radicacion .fa-trash, " +
-    "#solicitudes-table-body-trabaja-nosotros .fa-trash, " +
-    "#solicitudes-table-body-historial .fa-trash"
-  );
-
-  deleteButtons.forEach((icon) => {
-    const btn = icon.closest("button");
-    if (!btn) return;
-
-    if (userRole === "operativo") {
-      btn.disabled = true;
-      btn.classList.add("opacity-50", "cursor-not-allowed");
-      btn.title = "No tienes permisos para eliminar.";
-    } else {
-      btn.disabled = false;
-      btn.classList.remove("opacity-50", "cursor-not-allowed");
-      btn.title = "";
-    }
   });
-
-  // 3) Operativo: ocultar Cuentas de Cobro
-  const bloqueCuentas = $("admin-bloque-cuentas-cobro");
-  if (userRole === "operativo") {
-    if (bloqueCuentas) bloqueCuentas.classList.add("hidden");
-  } else {
-    if (bloqueCuentas) bloqueCuentas.classList.remove("hidden");
-  }
-
-  // 4) Operativo: ocultar SUBIDA de fichas (solo deja el visor)
-  const bloqueSubirFichas = $("admin-subir-fichas-bloque");
-  if (userRole === "operativo") {
-    if (bloqueSubirFichas) bloqueSubirFichas.classList.add("hidden");
-  } else {
-    if (bloqueSubirFichas) bloqueSubirFichas.classList.remove("hidden");
-  }
-
-  // 5) Cambiar nombre del tab según rol (y restaurarlo en admin)
-  const tabFichasCuentasBtn = qs(
-    '.admin-tab-btn[data-tab="fichas-cuentas"]'
-  );
-
-  if (tabFichasCuentasBtn) {
-    if (userRole === "operativo") {
-      tabFichasCuentasBtn.innerHTML =
-        `<i class="fas fa-file-alt mr-2"></i> Fichas Comerciales`;
-    } else {
-      tabFichasCuentasBtn.innerHTML =
-        `<i class="fas fa-file-invoice-dollar mr-2"></i> Fichas y Cuentas`;
-    }
-  }
-
-  const tituloPanel = $("titulo-fichas-cuentas");
-
-  if (tituloPanel) {
-    if (userRole === "admin") {
-      tituloPanel.textContent = "Gestión de Fichas y Cuentas de Cobro";
-    } else if (userRole === "operativo") {
-      tituloPanel.textContent = "Fichas Comerciales";
-    }
-  }
-
-  // Nota: el select de estado en modal se maneja en renderSolicitudDetalle (como ya lo tienes).
-}
-
-// --- Inicializar para todos los formularios de perfilamiento y radicación ---
+} 
 function configurarAsesorFormulario(formId) {
-  const cedulaInput = document.getElementById(`cedula-asesor-${formId}`);
-  if (!cedulaInput) return;
 
-  cedulaInput.addEventListener("input", () => {
-    buscarAsesorPorCedula(cedulaInput.value.trim(), formId);
+  const input = $(`cedula-asesor-${formId}`);
+  if (!input) return;
+
+  input.addEventListener("input", () => {
+    buscarAsesorPorCedula(input.value.trim(), formId);
   });
-}
+} 
+["credivillas", "libranza", "hipotecario", "tarjetas", "radicacion"]
+  .forEach(configurarAsesorFormulario);
+`` 
+document.addEventListener("DOMContentLoaded", () => {
 
-// Llamar a configurarAsesorFormulario para cada formulario
-["credivillas", "libranza", "hipotecario", "tarjetas", "radicacion"].forEach(
-  configurarAsesorFormulario
-);
-
-document.addEventListener("DOMContentLoaded", function () {
-  // --- Inicialización de tabs, menús y formularios ---
+  // ✅ UI
   setupFormTabs();
   setupAdminTabs();
   setupMobileMenu();
   setupAdminAccess();
   setupLoginForm();
+
+  // ✅ Formularios
   setupDynamicFields();
   setupPlazos();
   setupActividadEconomica();
   setupUppercaseInputs();
 
-  // Formularios públicos
-  document
-    .getElementById("trabaja-nosotros-form")
-    ?.addEventListener("submit", (e) => handleFormSubmit(e, "trabaja-nosotros"));
+  // ✅ PERFILAMIENTO
+  ["credivillas","libranza","hipotecario","tarjetas"]
+    .forEach(tipo => {
 
-  document
-    .getElementById("radicacion-form")
-    ?.addEventListener("submit", (e) => handleFormSubmit(e, "radicacion"));
+      document
+        .querySelector(`#${tipo} form`)
+        ?.addEventListener("submit", e =>
+          handleFormSubmit(e, tipo)
+        );
+    });
 
-  document
-    .querySelector("#credivillas form")
-    ?.addEventListener("submit", (e) => handleFormSubmit(e, "credivillas"));
+  // ✅ RADICACIÓN
+  $("radicacion-form")
+    ?.addEventListener("submit", e =>
+      handleFormSubmit(e, "radicacion")
+    );
 
-  document
-    .querySelector("#libranza form")
-    ?.addEventListener("submit", (e) => handleFormSubmit(e, "libranza"));
-
-  document
-    .querySelector("#hipotecario form")
-    ?.addEventListener("submit", (e) => handleFormSubmit(e, "hipotecario"));
-
-  document
-    .querySelector("#tarjetas form")
-    ?.addEventListener("submit", (e) => handleFormSubmit(e, "tarjetas"));
-
-  // Actualizar interfaz según login
+  // ✅ LOGIN UI
   updateAuthUI();
 
-  // ✅ Autocompletar asesor si ya hay sesión iniciada
+  // ✅ AUTOCOMPLETAR ASESOR
   autocompletarDatosAsesor();
 
-  // ✅ PUBLICIDAD: cargar y renderizar SIEMPRE (Inicio + Comercial)
-  // (Esto hace que se vea en todas las sesiones porque lee desde Supabase)
-  cargarYRenderPublicidad?.();
-
-  // ✅ PUBLICIDAD ADMIN: enganchar listeners del módulo tipo "Cuentas"
-  $("btn-crear-publicidad")?.addEventListener("click", (e) => {
-    e.preventDefault();
-    subirPublicidadAdmin?.();
-  });
-
-  $("btn-recargar-publicidad")?.addEventListener("click", (e) => {
-    e.preventDefault();
-    verPublicidadAdmin?.();
-  });
-
-  // --- Manejar sección inicial según hash ---
+});
+``
   async function handleInitialSection() {
-    const hash = window.location.hash.substring(1);
 
-    if (hash === "admin") {
-      if (isAuthenticated()) {
-        showSection("admin");
-        await showAdminPanel();
+  const hash = window.location.hash.substring(1);
 
-        // Tab por defecto
-        qs('.admin-tab-btn[data-tab="creditos"]')?.click();
-      } else {
-        showLoginModal();
-        showSection("inicio");
-      }
-    }
-    else if (document.getElementById(hash)) {
-      showSection(hash);
+  if (hash === "admin") {
+
+    if (isAuthenticated()) {
+      showSection("admin");
+      await showAdminPanel();
+
+      // ✅ TAB CORRECTO
+      qs('.admin-tab-btn[data-tab="perfilamiento"]')?.click();
+
     } else {
+      showLoginModal();
       showSection("inicio");
     }
+
+  } else if ($(hash)) {
+
+    showSection(hash);
+
+  } else {
+
+    showSection("inicio");
   }
-
-  handleInitialSection();
-  window.addEventListener("hashchange", handleInitialSection);
-
-  // --- Botón radicación ---
-  document
-    .getElementById("radicacion-button")
-    ?.addEventListener("click", function (e) {
-      e.preventDefault();
-      showSection("formulario2");
-      window.location.hash = "formulario2";
-    });
-
-  // --- Modal de login ---
-  $("login-modal")?.addEventListener("click", (e) => {
-    if (e.target.id === "login-modal") hideLoginModal();
-  });
-
-  // --- Botón buscar cliente radicación ---
-  document
-    .getElementById("buscar-cliente-btn")
-    ?.addEventListener("click", buscarClienteParaRadicacion);
-
-  // --- Botón exportar historial ---
-  document
-    .getElementById("export-historial-btn")
-    ?.addEventListener("click", exportHistorialClientes);
-
-  // --- Al iniciar, deshabilitar todos los campos excepto la cédula ---
-  deshabilitarCamposRadicacion();
-  setCamposPerfilamientoRadicacionLocked(true);
-  marcarPerfilamientoRadicacionCargado(false);
-  const cedulaInput = $("radicacion-cedula-cliente");
-  if (cedulaInput) {
-    cedulaInput.addEventListener("input", () => {
-      marcarPerfilamientoRadicacionCargado(false);
-      if (cedulaInput.value.trim() === "") {
-        limpiarCamposRadicacion();
-        deshabilitarCamposRadicacion();
-        setCamposPerfilamientoRadicacionLocked(true);
-        $("radicacion-cedula-status").innerHTML = "";
-      }
-    });
-  }
-
-  // --- Búsqueda en historial ---
-  const historialCedulaSearchInput = $("historial-cedula-search");
-  const historialSearchBtn = $("historial-search-btn");
-  const historialClearSearchBtn = $("historial-clear-search-btn");
-
-  historialSearchBtn?.addEventListener("click", () => buscarHistorial());
-  historialClearSearchBtn?.addEventListener("click", () => {
-    historialCedulaSearchInput.value = "";
-    buscarHistorial();
-  });
-
-  // 🆕 --- Lógica dinámica SOLO para formulario de Créditos Radicados ---
-  const creditosForm = $("creditos-form");
-  if (creditosForm) {
-    const operativoRad = creditosForm.querySelector('select[name="operativo"]');
-    const entidadRad = creditosForm.querySelector('select[name="entidad"]');
-    const oficinaRad = creditosForm.querySelector('select[name="oficina"]');
-    const lineaRad = creditosForm.querySelector('select[name="linea"]');
-    const tipoRad = creditosForm.querySelector('select[name="tipo-solicitud"]');
-    const plazoRad = $("creditos-plazo");
-    const etapaRad = $("creditos-etapa");
-    const seguroRad = creditosForm.querySelector('select[name="seguro"]');
-
-    const entidadRadOpcionesOriginales = entidadRad ? entidadRad.innerHTML : "";
-
-    const generarPlazos = (inicio, fin, paso = 12) =>
-      Array.from({ length: (fin - inicio) / paso + 1 }, (_, i) => inicio + i * paso);
-
-    const etapasOtros = [
-      "Enviado",
-      "Devuelto",
-      "En estudio",
-      "Aplazado",
-      "Aprobado",
-      "Negado",
-      "Visacion",
-      "Pendiente desembolso",
-      "Desembolsado",
-    ];
-
-    const opciones = {
-      Credivillas: {
-        tipos: ["Compra de Cartera", "Libre Inversión"],
-        plazos: generarPlazos(12, 72, 1),
-        etapas: [
-          "Radicación Pendiente",
-          "Devuelto Complementación",
-          "Verificación Empresa",
-          "Análisis",
-          "Negado Pte Validar",
-          "Negado",
-          "Constitución Seguro",
-          "Atribuciones Personales",
-          "Comité Dirección",
-          "Comité Regional",
-          "Comité Gerencia",
-          "Comité Jefatura",
-          "Comité Vicepresidencia",
-          "Vobo Cliente",
-          "Devuelto Garantías",
-          "Vobo Jurídico",
-          "Contabilización Pendiente",
-          "Contabilización Aceptado",
-          "Desiste",
-        ],
-      },
-      Libranza: {
-        tipos: ["Compra de Cartera", "Libre Inversión"],
-        plazos: generarPlazos(12, 180, 1),
-        etapas: [
-          "Radicación Pendiente",
-          "Devuelto Complementación",
-          "Análisis",
-          "Negado Pte Validar",
-          "Negado",
-          "Constitución Seguro",
-          "Atribuciones Personales",
-          "Comité Dirección",
-          "Comité Regional",
-          "Comité Jefatura",
-          "Comité Vicepresidencia",
-          "Vobo Cliente",
-          "Vobo Comercial",
-          "Vobo Cartera",
-          "Vobo Empresa",
-          "Devuelto Garantías",
-          "Vobo Jurídico",
-          "Archivado",
-          "Contabilización Pendiente",
-          "Contabilización Aceptado",
-          "Desiste",
-          "Retenido por Otra Entidad",
-        ],
-      },
-      Hipotecario: {
-        tipos: ["Compra de Cartera", "Libre Inversión", "Casa Usada", "Casa Nueva", "Leasing"],
-        plazos: generarPlazos(12, 240, 1),
-        etapas: [
-          "Radicación Pendiente",
-          "Verificación Empresa",
-          "Devuelto Complementación",
-          "Preanálisis",
-          "Comité Dirección Preaprobado",
-          "Comité Gerencia Preaprobado",
-          "Comité Jefatura Preaprobado",
-          "Vobo Cliente Preaprobado",
-          "Negado Pte Validar",
-          "Negado",
-          "Carta Preaprobado",
-          "Avalúo",
-          "Análisis",
-          "Comité Dirección",
-          "Comité Jefatura Crédito",
-          "Comité Gerencia",
-          "Señalización",
-          "Carta Aprobado",
-          "Trámite Crédito",
-          "Estudio Títulos",
-          "Minuta",
-          "Recepción Escritura",
-          "Contabilización Pendiente",
-          "Contabilización Aceptado",
-          "Archivado",
-          "Desiste",
-        ],
-      },
-      Tarjetas: {
-        tipos: ["Libre Inversión"],
-        plazos: [0],
-        etapas: [
-          "Radicación Pendiente",
-          "Devuelto Complementación",
-          "Verificación Empresa",
-          "Análisis",
-          "Negado Pte Validar",
-          "Negado",
-          "Atribuciones Personales",
-          "Vobo Cliente",
-          "Devuelto Garantías",
-          "Vobo Jurídico",
-          "Contabilización Pendiente",
-          "Contabilización Aceptado",
-          "Desiste",
-        ],
-      },
-    };
-
-    function actualizarPorOperativoYEntidad() {
-      const opSel = (operativoRad?.value || "").trim();
-      const entidadActual = entidadRad?.value || "";
-      const lineaActual = lineaRad?.value || "";
-
-      if (!opSel) {
-        if (oficinaRad)
-          oficinaRad.innerHTML =
-            '<option value="">Seleccione un operativo primero...</option>';
-
-        if (lineaRad)
-          lineaRad.innerHTML =
-            '<option value="">Seleccione una entidad primero...</option>';
-
-        if (entidadRad && entidadRadOpcionesOriginales)
-          entidadRad.innerHTML = entidadRadOpcionesOriginales;
-
-        return;
-      }
-
-      // ✅ Restaurar entidades normales
-      if (entidadRad) {
-        entidadRad.innerHTML = entidadRadOpcionesOriginales;
-
-        if (
-          entidadActual &&
-          [...entidadRad.options].some((o) => o.value === entidadActual)
-        ) {
-          entidadRad.value = entidadActual;
-        } else {
-          entidadRad.value = "";
-        }
-      }
-
-      // ✅ Oficinas permitidas para los operativos
-      let oficinas = [];
-
-      if (
-        opSel === "Andres Armando Solano Ospino" ||
-        opSel === "Rodrigo Rafael Campo Castillo" ||
-        opSel === "Rafael Carlos Ospino Cobo"
-      ) {
-        oficinas = [
-          "Credibank Barranquilla",
-          "Credibank Valledupar",
-          "Credibank Monteria",
-        ];
-      } else {
-        oficinas = ["Credibank"];
-      }
-
-      // ✅ Llenar select de oficinas
-      if (oficinaRad) {
-        oficinaRad.innerHTML =
-          '<option value="">Seleccione...</option>';
-
-        oficinas.forEach((oficina) => {
-          const optOf = document.createElement("option");
-          optOf.value = oficina;
-          optOf.textContent = oficina;
-          oficinaRad.appendChild(optOf);
-        });
-      }
-
-      actualizarLineasSegunEntidad(lineaActual);
-    }
-
-    function actualizarLineasSegunEntidad(lineaPreferida = "") {
-      if (!lineaRad) return;
-
-      const entidadSeleccionada = entidadRad?.value || "";
-      const entidadNormalizada = normalizarTextoPlano(entidadSeleccionada);
-      const esAvVillas = esEntidadAvVillas(entidadSeleccionada);
-      const hayEntidadSeleccionada = entidadNormalizada !== "";
-
-      lineaRad.innerHTML = '<option value="">Seleccione...</option>';
-
-      if (!hayEntidadSeleccionada) {
-        if (tipoRad) tipoRad.innerHTML = '<option value="">Seleccione...</option>';
-        if (plazoRad) plazoRad.innerHTML = '<option value="">Seleccione...</option>';
-        if (etapaRad) etapaRad.innerHTML = '<option value="">Seleccione...</option>';
-        actualizarSeguro();
-        return;
-      }
-
-      const lineas = esAvVillas
-        ? ["Credivillas", "Libranza", "Hipotecario", "Tarjetas"]
-        : ["Libranza"];
-
-      lineas.forEach((linea) => {
-        const opt = document.createElement("option");
-        opt.value = linea;
-        opt.textContent = linea;
-        lineaRad.appendChild(opt);
-      });
-
-      if (lineaPreferida && lineas.includes(lineaPreferida)) {
-        lineaRad.value = lineaPreferida;
-      } else if (!esAvVillas) {
-        lineaRad.value = "Libranza";
-      } else {
-        lineaRad.value = "";
-      }
-
-      if (lineaRad.value) {
-        actualizarSelects(lineaRad.value);
-      } else {
-        if (tipoRad) tipoRad.innerHTML = '<option value="">Seleccione...</option>';
-        if (plazoRad) plazoRad.innerHTML = '<option value="">Seleccione...</option>';
-        if (etapaRad) etapaRad.innerHTML = '<option value="">Seleccione...</option>';
-        actualizarSeguro();
-      }
-    }
-
-    function actualizarSelects(linea, valoresActuales = {}) {
-      const oldTipo = tipoRad.value;
-      const oldPlazo = plazoRad.value;
-      const oldEtapa = etapaRad.value;
-
-      tipoRad.innerHTML = '<option value="">Seleccione...</option>';
-      plazoRad.innerHTML = '<option value="">Seleccione...</option>';
-      etapaRad.innerHTML = '<option value="">Seleccione...</option>';
-
-      const entidadActual = (entidadRad.value || "").toLowerCase();
-      const esAvVillas = entidadActual.includes("av villas");
-      const config = opciones[linea];
-      if (!config) return;
-
-      const tiposUsar = esAvVillas ? config.tipos : ["Compra de Cartera", "Libre Inversión"];
-      tiposUsar.forEach((t) => {
-        const opt = document.createElement("option");
-        opt.value = t;
-        opt.textContent = t;
-        tipoRad.appendChild(opt);
-      });
-
-      config.plazos.forEach((p) => {
-        const opt = document.createElement("option");
-        opt.value = p;
-        opt.textContent = p === 0 ? "N/A" : `${p} meses`;
-        plazoRad.appendChild(opt);
-      });
-
-      const etapasAUsar = esAvVillas ? config.etapas || [] : etapasOtros;
-      etapasAUsar.forEach((e) => {
-        const opt = document.createElement("option");
-        opt.value = e;
-        opt.textContent = e;
-        etapaRad.appendChild(opt);
-      });
-
-      if (valoresActuales.tipoSolicitud) tipoRad.value = valoresActuales.tipoSolicitud;
-      if (valoresActuales.plazo) plazoRad.value = valoresActuales.plazo;
-      if (valoresActuales.etapa) etapaRad.value = valoresActuales.etapa;
-
-      if (!tipoRad.value && oldTipo) tipoRad.value = oldTipo;
-      if (!plazoRad.value && oldPlazo) plazoRad.value = oldPlazo;
-      if (!etapaRad.value && oldEtapa) etapaRad.value = oldEtapa;
-
-      actualizarSeguro();
-    }
-
-    function actualizarSeguro() {
-      if (!seguroRad) return;
-
-      const lineaSeleccionada = lineaRad?.value || "";
-      const entidadSeleccionada = entidadRad?.value || "";
-      const lineaNormalizada = normalizarTextoPlano(lineaSeleccionada);
-      const esAvVillas = esEntidadAvVillas(entidadSeleccionada);
-
-      const bloquearPorRegla = aplicaReglaLibranzaSinSeguroNiCampana({
-        entidad: entidadSeleccionada,
-        linea: lineaSeleccionada,
-      });
-
-      if (bloquearPorRegla) {
-        seguroRad.value = "";
-        seguroRad.disabled = true;
-        seguroRad.classList.add("bg-gray-100", "cursor-not-allowed");
-        return;
-      }
-
-      seguroRad.disabled = false;
-      seguroRad.classList.remove("bg-gray-100", "cursor-not-allowed");
-
-      const esLineaAvVillasSinPredeterminado =
-        esAvVillas &&
-        ["libranza", "hipotecario", "credivillas"].includes(lineaNormalizada);
-
-      if (esLineaAvVillasSinPredeterminado) {
-        seguroRad.value = "";
-        return;
-      }
-
-      if (!lineaNormalizada) {
-        seguroRad.value = "";
-        return;
-      }
-
-      const esLibranza = lineaNormalizada === "libranza";
-      seguroRad.value = esLibranza ? "si" : "no";
-    }
-
-    operativoRad?.addEventListener("change", actualizarPorOperativoYEntidad);
-    lineaRad?.addEventListener("change", (e) => actualizarSelects(e.target.value));
-    entidadRad?.addEventListener("change", () => {
-      actualizarLineasSegunEntidad(lineaRad?.value || "");
-    });
-    etapaRad?.addEventListener("focus", () => {
-      const seguroActual = seguroRad?.value || "";
-      actualizarSelects(lineaRad.value);
-      if (seguroRad && seguroActual) seguroRad.value = seguroActual;
-    });
-
-    window.addEventListener("load", () => {
-      actualizarPorOperativoYEntidad();
-      if (entidadRad?.value) {
-        actualizarLineasSegunEntidad(lineaRad?.value || "");
-      } else if (lineaRad) {
-        lineaRad.innerHTML = '<option value="">Seleccione...</option>';
-      }
-      actualizarSeguro();
-    });
-
-    const fileAutorizacion = $("autorizacion-consulta");
-    const checkDigital = $("autorizacion-digital");
-
-    if (fileAutorizacion && checkDigital) {
-      checkDigital.addEventListener("change", () => {
-        if (checkDigital.checked) {
-          fileAutorizacion.disabled = true;
-          fileAutorizacion.removeAttribute("required");
-          fileAutorizacion.value = "";
-          fileAutorizacion.classList.add("bg-gray-100", "cursor-not-allowed");
-        } else {
-          fileAutorizacion.disabled = false;
-          fileAutorizacion.setAttribute("required", "true");
-          fileAutorizacion.classList.remove("bg-gray-100", "cursor-not-allowed");
-        }
-      });
-    }
-  }
-
-  // 🆕 --- Mostrar panel automáticamente si el usuario ya está autenticado ---
-  window.addEventListener("load", () => {
-    if (isAuthenticated()) {
-      // ✅ Rellenar automáticamente datos del asesor
-      autocompletarDatosAsesor();
-      showAdminPanel();
-      cargarPerfilamiento();
-      cargarRadicacion();
-      cargarTrabajaNosotros();
-      cargarHistorial();
-      cargarCreditos?.();
-      cargarAsesores?.();
-
-      // ✅ Publicidad: refrescar en caso de que haya cambiado desde otra sesión
-      cargarYRenderPublicidad?.();
-      verPublicidadAdmin?.();
-
-      qs('.admin-tab-btn[data-tab="creditos"]')?.click();
-    }
-  });
-}); // ✅ cierre DOMContentLoaded
-
-// --- Consulta de Crédito (Tabla creditos_radicados) ---
-document
-  .getElementById("consulta-credito-form")
-  .addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const numeroCredito = document
-      .getElementById("numero_credito-input")
-      .value.trim();
-    const resultadoDiv = $("resultado-credito");
-
-    if (!numeroCredito) return;
-
-    try {
-      const { data, error } = await supabaseClient
-        .from("creditos_radicados")
-        .select("*")
-        .eq("numero_credito", numeroCredito)
-        .maybeSingle();
-
-      if (error || !data) {
-        resultadoDiv.innerHTML = `<p class="text-red-600 font-semibold">❌ No se encontró un crédito con ese número.</p>`;
-        resultadoDiv.classList.remove("hidden");
-        return;
-      }
-
-      // ✅ Campos que SÍ queremos mostrar (según tus capturas)
-      const camposMostrar = [
-        "entidad",
-        "nombre",
-        "cedula",
-        "linea",
-        "tipo_solicitud",
-        "tasa",
-        "convenio_libranza",
-        "empresa",
-        "monto_solicitado",
-        "monto_retanqueo",
-        "saldo_comprar",
-        "monto_aprobado_libranza",
-        "monto_aprobado_credivillas",
-        "monto_aprobado_hipotecario",
-        "monto_aprobado_tarjeta",
-        "numero_tarjetas_aprobadas",
-        "entidad_comprar",
-        "seguro",
-        "plazo",
-        "etapa",
-        "fecha_desembolso",
-        "observaciones",
-      ];
-
-      let detallesHtml = `
-        <h3 class="text-xl font-bold text-gray-800 mb-4">📋 Detalles del Crédito</h3>
-        <div class="overflow-x-auto">
-          <table class="min-w-full border border-gray-300 text-sm">
-            <tbody>
-      `;
-
-      // 🔍 Mostrar solo los campos seleccionados
-      camposMostrar.forEach((key) => {
-        if (data[key] === undefined) return; // si no existe el campo, lo ignora
-        let valor = data[key] ?? "-";
-
-        // Formatear números y fechas
-        const camposMoneda = [
-          "monto_solicitado",
-          "monto_retanqueo",
-          "saldo_comprar",
-          "monto_aprobado_libranza",
-          "monto_aprobado_credivillas",
-          "monto_aprobado_hipotecario",
-          "monto_aprobado_tarjeta",
-        ];
-
-        if (camposMoneda.includes(key)) {
-          valor = formatCurrency(valor);
-        }
-        if (key.includes("fecha")) {
-          valor = formatDate(valor);
-        }
-
-        detallesHtml += `
-          <tr class="border-b">
-            <td class="px-3 py-2 font-semibold text-gray-700 capitalize">${formatearNombreCampo(
-          key
-        )}</td>
-            <td class="px-3 py-2 text-gray-600">${valor}</td>
-          </tr>
-        `;
-      });
-
-      detallesHtml += `
-            </tbody>
-          </table>
-        </div>
-      `;
-
-      resultadoDiv.innerHTML = detallesHtml;
-      resultadoDiv.classList.remove("hidden");
-    } catch (err) {
-      console.error("Error consultando crédito:", err);
-      resultadoDiv.innerHTML = `<p class="text-red-600 font-semibold">⚠️ Ocurrió un error al consultar.</p>`;
-      resultadoDiv.classList.remove("hidden");
-    }
-  });
-
-// --- Formatear fecha de vinculación sin desfase ---
-function formatFechaVinculacion(dateString) {
-  if (!dateString) return "N/A";
-
-  const [year, month, day] = String(dateString).split("-");
-  if (!year || !month || !day) return "Fecha inválida";
-
-  return `${day.padStart(2, "0")}/${month.padStart(2, "0")}/${year}`;
 }
 
-// 📋 Cargar asesores (filtra por cédula, estado y coordinador)
+handleInitialSection();
+window.addEventListener("hashchange", handleInitialSection); 
+$("radicacion-button")?.addEventListener("click", e => {
+  e.preventDefault();
+
+  showSection("formulario2");
+  window.location.hash = "formulario2";
+}); 
+$("login-modal")?.addEventListener("click", e => {
+  if (e.target.id === "login-modal") {
+    hideLoginModal();
+  }
+});
+$("buscar-cliente-btn")
+  ?.addEventListener("click", buscarClienteParaRadicacion); 
+$("export-historial-btn")
+  ?.addEventListener("click", exportHistorialClientes); 
+deshabilitarCamposRadicacion();
+setCamposPerfilamientoRadicacionLocked(true);
+marcarPerfilamientoRadicacionCargado(false);
+
+const cedula = $("radicacion-cedula-cliente");
+
+if (cedula) {
+
+  cedula.addEventListener("input", () => {
+
+    marcarPerfilamientoRadicacionCargado(false);
+
+    if (!cedula.value.trim()) {
+
+      limpiarCamposRadicacion();
+      deshabilitarCamposRadicacion();
+      setCamposPerfilamientoRadicacionLocked(true);
+
+      $("radicacion-cedula-status").innerHTML = "";
+    }
+  });
+} 
+const input = $("historial-cedula-search");
+const btnBuscar = $("historial-search-btn");
+const btnLimpiar = $("historial-clear-search-btn");
+
+btnBuscar?.addEventListener("click", buscarHistorial);
+
+btnLimpiar?.addEventListener("click", () => {
+  input.value = "";
+  buscarHistorial();
+}); 
+
+  window.addEventListener("load", () => {
+
+  if (!isAuthenticated()) return;
+
+  // ✅ Autocompletar asesor
+  autocompletarDatosAsesor();
+
+  // ✅ Mostrar panel
+  showAdminPanel();
+
+  // ✅ Cargar módulos reales
+  cargarPerfilamiento();
+  cargarRadicacion();
+  cargarHistorial();
+  cargarAsesores();
+
+  // ✅ Abrir tab correcto
+  qs('.admin-tab-btn[data-tab="perfilamiento"]')?.click();
+}); 
+function formatFechaVinculacion(dateString) {
+
+  if (!dateString) return "N/A";
+
+  const [y, m, d] = String(dateString).split("-");
+  if (!y || !m || !d) return "Fecha inválida";
+
+  return `${d.padStart(2,"0")}/${m.padStart(2,"0")}/${y}`;
+} 
 async function cargarAsesores(
-  cedulaFiltro = "",
-  estadoFiltro = "",
-  coordinadorFiltro = ""
+  cedula = "",
+  estado = "",
+  coordinador = ""
 ) {
+
   let query = supabaseClient
     .from("asesores")
     .select("*")
     .order("fecha_vinculacion", { ascending: false });
 
-  if (cedulaFiltro) query = query.ilike("cedula", `%${cedulaFiltro}%`);
-  if (estadoFiltro) query = query.eq("estado", estadoFiltro);
-  if (coordinadorFiltro) query = query.ilike("coordinador", `%${coordinadorFiltro}%`);
+  if (cedula) query = query.ilike("cedula", `%${cedula}%`);
+  if (estado) query = query.eq("estado", estado);
+  if (coordinador) query = query.ilike("coordinador", `%${coordinador}%`);
 
   const { data, error } = await query;
 
@@ -5701,253 +3484,205 @@ async function cargarAsesores(
   const contador = $("contador-asesores");
 
   if (error) {
-    console.error("Error cargando asesores:", error);
-    tbody.innerHTML = `<tr><td colspan="10" class="text-red-600 p-4 text-center">Error al cargar asesores</td></tr>`;
-    if (contador) contador.textContent = "(0)";
+    console.error(error);
+    tbody.innerHTML = `<tr><td colspan="10" class="text-red-600 text-center">Error</td></tr>`;
+    contador && (contador.textContent = "(0)");
     return;
   }
 
-  if (!data || data.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="10" class="text-gray-500 p-4 text-center">No hay asesores registrados</td></tr>`;
-    if (contador) contador.textContent = "(0)";
+  if (!data?.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="text-center text-gray-500">Sin registros</td></tr>`;
+    contador && (contador.textContent = "(0)");
     return;
   }
 
-  if (contador) contador.textContent = `(${data.length})`;
+  contador && (contador.textContent = `(${data.length})`);
 
-  tbody.innerHTML = data.map((asesor) => {
-    const estado = asesor.estado || "Sin Vinculación";
+  tbody.innerHTML = data.map(a => {
 
-    const colorClase =
-      estado === "Activo"
-        ? "text-green-600 font-semibold"
-        : estado === "Inactivo"
-          ? "text-red-600 font-semibold"
-          : "text-gray-500 font-semibold";
+    const estado = a.estado || "Sin Vinculación";
 
-    const payload = encodeURIComponent(JSON.stringify(asesor));
-    const userRole = getUserRole();
+    const color =
+      estado === "Activo" ? "text-green-600" :
+      estado === "Inactivo" ? "text-red-600" :
+      "text-gray-500";
+
+    const payload = encodeURIComponent(JSON.stringify(a));
+    const role = getUserRole();
 
     return `
       <tr class="border-b">
-        <td class="px-4 py-2 text-center">${asesor.cedula || "-"}</td>
-        <td class="px-4 py-2">${asesor.nombre || "-"}</td>
-        <td class="px-4 py-2">${asesor.coordinador || "-"}</td>
-        <td class="px-4 py-2 text-center">${asesor.fecha_vinculacion ? formatFechaVinculacion(asesor.fecha_vinculacion) : "N/A"}</td>
+        <td>${a.cedula || "-"}</td>
+        <td>${a.nombre || "-"}</td>
+        <td>${a.coordinador || "-"}</td>
+        <td>${a.fecha_vinculacion ? formatFechaVinculacion(a.fecha_vinculacion) : "N/A"}</td>
 
-        <td class="px-4 py-2 text-center">
-          <select
-            onchange="actualizarEstadoAsesor('${asesor.cedula}', this.value)"
-            class="estado-select border rounded px-2 py-1 text-sm ${colorClase}">
-            <option value="Activo" ${estado === "Activo" ? "selected" : ""}>Activo</option>
-            <option value="Inactivo" ${estado === "Inactivo" ? "selected" : ""}>Inactivo</option>
-            <option value="Sin Vinculación" ${estado === "Sin Vinculación" ? "selected" : ""}>Sin Vinculación</option>
+        <td>
+          <select 
+            onchange="actualizarEstadoAsesor('${a.cedula}', this.value)"
+            class="border rounded ${color}">
+            
+            <option ${estado==="Activo"?"selected":""}>Activo</option>
+            <option ${estado==="Inactivo"?"selected":""}>Inactivo</option>
+            <option ${estado==="Sin Vinculación"?"selected":""}>Sin Vinculación</option>
           </select>
         </td>
 
-        <td class="px-4 py-2 text-center">${asesor.telefono || "-"}</td>
-        <td class="px-4 py-2 text-center">${asesor.banco || "-"}</td>
-        <td class="px-4 py-2 text-center">${asesor.cuenta || "-"}</td>
+        <td>${a.telefono || "-"}</td>
+        <td>${a.banco || "-"}</td>
+        <td>${a.cuenta || "-"}</td>
 
-        <td class="px-4 py-2 text-center whitespace-nowrap">
-          <button onclick="editarAsesorDecodificado('${payload}')"
-            class="bg-yellow-500 text-white px-3 py-1 rounded mr-2 hover:bg-yellow-600 whitespace-nowrap">
-            <i class="fas fa-edit"></i> Editar
+        <td>
+          <button onclick="editarAsesorDecodificado('${payload}')">
+            Editar
           </button>
-          ${userRole === "admin"
-        ? `
-            <button onclick="eliminarAsesor('${asesor.cedula}')"
-              class="bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700 whitespace-nowrap">
-              <i class="fas fa-trash"></i> Eliminar
-            </button>`
-        : ""
-      }
+
+          ${role === "admin" ? `
+            <button onclick="eliminarAsesor('${a.cedula}')">
+              Eliminar
+            </button>
+          ` : ""}
         </td>
       </tr>
     `;
   }).join("");
-}
+} 
 
-// ✅ Actualizar estado individual
-async function actualizarEstadoAsesor(cedula, nuevoEstado) {
+
+async function actualizarEstadoAsesor(cedula, nuevoEstado, el = null) {
+
   try {
     const { error } = await supabaseClient
       .from("asesores")
       .update({ estado: nuevoEstado })
       .eq("cedula", cedula);
 
-    if (error) {
-      console.error("Error actualizando estado:", error);
-      mostrarMensaje(null, "error", "❌ No se pudo actualizar el estado");
-      return;
-    }
+    if (error) throw error;
 
-    // Cambiar color del select
-    const select = qs(
-      `select[onchange="actualizarEstadoAsesor('${cedula}', this.value)"]`
-    );
-    if (select) {
-      select.classList.remove(
-        "text-green-600",
-        "text-red-600",
-        "text-gray-500"
-      );
+    // ✅ actualizar estilo directo
+    if (el) {
+      el.classList.remove("text-green-600","text-red-600","text-gray-500");
 
       if (nuevoEstado === "Activo")
-        select.classList.add("text-green-600", "font-semibold");
+        el.classList.add("text-green-600","font-semibold");
       else if (nuevoEstado === "Inactivo")
-        select.classList.add("text-red-600", "font-semibold");
-      else select.classList.add("text-gray-500", "font-semibold");
+        el.classList.add("text-red-600","font-semibold");
+      else
+        el.classList.add("text-gray-500","font-semibold");
     }
 
-    mostrarMensaje(null, "exito", `✅ Estado actualizado a "${nuevoEstado}"`);
+    mostrarMensaje(null,"exito",`✅ Estado: ${nuevoEstado}`);
+
   } catch (e) {
-    console.error("Error en actualizarEstadoAsesor:", e);
-    mostrarMensaje(null, "error", "❌ Error inesperado al actualizar estado");
+    console.error(e);
+    mostrarMensaje(null,"error","❌ Error actualizando estado");
   }
 }
-
-// 🔹 Cargar coordinadores en el <select> del formulario y en el filtro
+`` 
 async function cargarCoordinadores() {
+
   const { data, error } = await supabaseClient
     .from("coordinadores")
     .select("nombre")
-    .order("nombre", { ascending: true });
-
-  const selectForm = $("coordinador-asesor");
-  const selectFiltro = $("filtro-coordinador-asesor");
-
-  if (selectForm)
-    selectForm.innerHTML = '<option value="">Seleccione un coordinador...</option>';
-  if (selectFiltro)
-    selectFiltro.innerHTML =
-      '<option value="">Todos los coordinadores</option>';
+    .order("nombre");
 
   if (error) {
-    console.error("Error al cargar coordinadores:", error);
+    console.error(error);
     return;
   }
 
-  data.forEach((coord) => {
-    if (selectForm) {
-      const option = document.createElement("option");
-      option.value = coord.nombre;
-      option.textContent = coord.nombre;
-      selectForm.appendChild(option);
-    }
+  const form = $("coordinador-asesor");
+  const filtro = $("filtro-coordinador-asesor");
 
-    if (selectFiltro) {
-      const option2 = document.createElement("option");
-      option2.value = coord.nombre;
-      option2.textContent = coord.nombre;
-      selectFiltro.appendChild(option2);
-    }
+  if (form) form.innerHTML = `<option value="">Seleccione...</option>`;
+  if (filtro) filtro.innerHTML = `<option value="">Todos</option>`;
+
+  data.forEach(c => {
+
+    form?.appendChild(new Option(c.nombre, c.nombre));
+    filtro?.appendChild(new Option(c.nombre, c.nombre));
+
   });
-}
+} 
 
-// 🧩 Cargar coordinadores y asesores al iniciar
 document.addEventListener("DOMContentLoaded", async () => {
+
   await cargarCoordinadores();
   await cargarAsesores();
 });
 
-// ✅ Escuchar cambios en búsqueda, filtro de estado y filtro de coordinador
 const inputCedula = $("buscar-cedula");
 const selectEstado = $("filtro-estado");
-const selectCoordinadorFiltro = $("filtro-coordinador-asesor");
+const selectCoord = $("filtro-coordinador-asesor");
 
-inputCedula.addEventListener("input", () => {
+function refrescarAsesores() {
   cargarAsesores(
-    inputCedula.value.trim(),
-    selectEstado.value,
-    selectCoordinadorFiltro ? selectCoordinadorFiltro.value : ""
+    inputCedula?.value.trim() || "",
+    selectEstado?.value || "",
+    selectCoord?.value || ""
   );
-});
-
-selectEstado.addEventListener("change", () => {
-  cargarAsesores(
-    inputCedula.value.trim(),
-    selectEstado.value,
-    selectCoordinadorFiltro ? selectCoordinadorFiltro.value : ""
-  );
-});
-
-if (selectCoordinadorFiltro) {
-  selectCoordinadorFiltro.addEventListener("change", () => {
-    cargarAsesores(
-      inputCedula.value.trim(),
-      selectEstado.value,
-      selectCoordinadorFiltro.value
-    );
-  });
 }
 
-// 🧾 Guardar / actualizar asesor
-$("asesor-form").addEventListener("submit", async (e) => {
+inputCedula?.addEventListener("input", refrescarAsesores);
+selectEstado?.addEventListener("change", refrescarAsesores);
+selectCoord?.addEventListener("change", refrescarAsesores); 
+
+$("asesor-form")?.addEventListener("submit", async (e) => {
+
   e.preventDefault();
 
-  const cedula = $("cedula-asesor").value.trim();
-  const nombre = $("nombre-asesor").value.trim();
-  const fecha = $("fecha-vinculacion").value;
-  const estado = $("estado-asesor").value;
-  const coordinador = $("coordinador-asesor").value;
-  const telefono = $("telefono-asesor")?.value.trim() || "";
-  const banco = $("banco-asesor")?.value.trim() || "";
-  const cuenta = $("cuenta-asesor")?.value.trim() || "";
+  const data = {
+    cedula: $("cedula-asesor").value.trim(),
+    nombre: $("nombre-asesor").value.trim(),
+    estado: $("estado-asesor").value,
+    coordinador: $("coordinador-asesor").value,
+    telefono: $("telefono-asesor")?.value.trim() || "",
+    banco: $("banco-asesor")?.value.trim() || "",
+    cuenta: $("cuenta-asesor")?.value.trim() || "",
+    fecha_vinculacion: $("fecha-vinculacion")?.value || null
+  };
 
   try {
-    const nuevoAsesor = {
-      cedula,
-      nombre,
-      estado,
-      coordinador,
-      telefono,
-      banco,
-      cuenta,
-    };
-
-    if (fecha) nuevoAsesor.fecha_vinculacion = fecha;
-
     const { error } = await supabaseClient
       .from("asesores")
-      .upsert([nuevoAsesor], { onConflict: "cedula" });
+      .upsert([data], { onConflict:"cedula" });
 
     if (error) throw error;
 
-    mostrarMensaje(null, "exito", "✅ Asesor guardado correctamente.");
-    $("asesor-form").reset();
-    await cargarAsesores();
-  } catch (err) {
-    console.error("Error guardando asesor:", err);
-    mostrarMensaje(null, "error", "❌ Error al guardar asesor.");
-  }
-});
+    mostrarMensaje(null,"exito","✅ Guardado");
+    e.target.reset();
 
-// ✏️ Editar asesor
-function editarAsesor(asesor) {
-  $("cedula-asesor").value = asesor.cedula || "";
-  $("nombre-asesor").value = asesor.nombre || "";
-  $("fecha-vinculacion").value = asesor.fecha_vinculacion || "";
-  $("estado-asesor").value = asesor.estado || "Sin Vinculación";
-  $("coordinador-asesor").value = asesor.coordinador || "";
-  $("telefono-asesor").value = asesor.telefono || "";
-  $("banco-asesor").value = asesor.banco || "";
-  $("cuenta-asesor").value = asesor.cuenta || "";
+    await cargarAsesores();
+
+  } catch (err) {
+    console.error(err);
+    mostrarMensaje(null,"error","❌ Error guardando");
+  }
+}); 
+
+function editarAsesor(a) {
+
+  $("cedula-asesor").value = a.cedula || "";
+  $("nombre-asesor").value = a.nombre || "";
+  $("fecha-vinculacion").value = a.fecha_vinculacion || "";
+  $("estado-asesor").value = a.estado || "Sin Vinculación";
+  $("coordinador-asesor").value = a.coordinador || "";
+  $("telefono-asesor").value = a.telefono || "";
+  $("banco-asesor").value = a.banco || "";
+  $("cuenta-asesor").value = a.cuenta || "";
 }
 
 function editarAsesorDecodificado(payload) {
+
   try {
-    const asesor = JSON.parse(decodeURIComponent(payload));
-    editarAsesor(asesor);
-  } catch (error) {
-    console.error("Error cargando datos del asesor para edición:", error);
-    mostrarMensaje(null, "error", "❌ No se pudo cargar la información del asesor.");
+    editarAsesor(JSON.parse(decodeURIComponent(payload)));
+  } catch {
+    mostrarMensaje(null,"error","❌ Error cargando asesor");
   }
 }
-
-// 🗑️ Eliminar asesor
 async function eliminarAsesor(cedula) {
-  if (!confirm("¿Seguro que quieres eliminar este asesor?")) return;
+
+  if (!confirm("¿Eliminar asesor?")) return;
 
   try {
     const { error } = await supabaseClient
@@ -5957,600 +3692,16 @@ async function eliminarAsesor(cedula) {
 
     if (error) throw error;
 
-    mostrarMensaje(null, "exito", "🗑️ Asesor eliminado correctamente.");
+    mostrarMensaje(null,"exito","✅ Eliminado");
+
     await cargarAsesores();
-  } catch (err) {
-    console.error("Error eliminando asesor:", err);
-    mostrarMensaje(null, "error", "❌ Error al eliminar asesor.");
+
+  } catch (e) {
+    console.error(e);
+    mostrarMensaje(null,"error","❌ Error eliminando");
   }
 }
 
-// ============================================================
-// 🔎 FILTROS AVANZADOS Y BUSCADOR DE CRÉDITOS RADICADOS
-// ============================================================
-
-// Elementos principales
-const inputBuscarCreditos = $("buscar-creditos");
-const inputCedulaNumero = $("filtro-cedula-numero");
-const filtrosSelects = $$("#filtros-creditos select");
-const tbodyCreditos = $("solicitudes-table-body-creditos");
-const noSolicitudesCreditos = $("no-solicitudes-creditos");
-
-// ============================================================
-// 🧰 Helpers para selects (soporta multiple)
-// ============================================================
-function getSelectValues(id) {
-  const el = $(id);
-  if (!el) return [];
-
-  // ✅ TomSelect soporta múltiples valores como array (o string si single)
-  if (el.tomselect) {
-    const v = el.tomselect.getValue();
-    if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter((x) => x !== "");
-    const s = String(v ?? "").trim();
-    return s ? [s] : [];
-  }
-
-  // ✅ Select nativo
-  if (el.multiple) {
-    return Array.from(el.selectedOptions || [])
-      .map((o) => (o.value ?? "").trim())
-      .filter((v) => v !== "");
-  }
-  const v = (el.value ?? "").trim();
-  return v ? [v] : [];
-}
-
-function setSelectValues(id, values) {
-  const el = $(id);
-  if (!el) return;
-
-  const vals = Array.isArray(values) ? values.map(String) : [String(values ?? "")];
-  const clean = vals.map((v) => v.trim()).filter((v) => v !== "");
-
-  // ✅ TomSelect
-  if (el.tomselect) {
-    el.tomselect.setValue(clean, true);
-    return;
-  }
-
-  // ✅ Select nativo
-  if (el.multiple) {
-    const set = new Set(clean);
-    Array.from(el.options).forEach((opt) => {
-      opt.selected = set.has(String(opt.value));
-    });
-  } else {
-    el.value = clean[0] ?? "";
-  }
-}
-
-function clearSelect(el) {
-  if (!el) return;
-
-  // ✅ TomSelect
-  if (el.tomselect) {
-    el.tomselect.clear(true);
-    el.tomselect.refreshOptions(false);
-    return;
-  }
-
-  // ✅ Select nativo
-  if (el.multiple) {
-    Array.from(el.options).forEach((o) => (o.selected = false));
-  } else {
-    el.value = "";
-  }
-}
-
-// ============================================================
-// 🧠 MEMORIA DE FILTROS ACTIVOS (usa SafeStore para evitar bloqueos)
-// ============================================================
-const FILTERS_KEY = "filtros_creditos";
-
-
-// ============================================================
-// ✅ Multi-select bonito (Tom Select) para filtros de Créditos
-//    - Permite seleccionar varias opciones
-//    - Búsqueda, tags, botón limpiar
-// ============================================================
-
-function initCreditosMultiSelects() {
-  if (typeof TomSelect === "undefined") return;
-
-  const ids = [
-    "filtro-entidad",
-    "filtro-anio",
-    "filtro-mes",
-    "filtro-linea",
-    "filtro-etapa",
-    "filtro-operativo",
-    "filtro-oficina",
-  ];
-
-  ids.forEach((id) => {
-    const el = $(id);
-    if (!el) return;
-
-    // Evitar doble inicialización
-    if (el.tomselect) return;
-
-    const placeholder = el.getAttribute("data-placeholder") || "Selecciona...";
-
-    new TomSelect(el, {
-      plugins: ["remove_button", "clear_button", "checkbox_options"],
-      placeholder,
-      persist: false,
-      maxItems: null,
-      create: false,
-      hideSelected: false,
-      closeAfterSelect: false,
-      allowEmptyOption: true,
-
-      // Mejor UX al escribir
-      render: {
-        no_results: function (data, escape) {
-          return '<div class="no-results">Sin resultados para "' + escape(data.input) + '"</div>';
-        },
-      },
-    });
-  });
-}
-
-function obtenerFiltrosActuales() {
-  return {
-    texto: inputBuscarCreditos?.value || "",
-    cedula: inputCedulaNumero?.value || "",
-
-    // multiples
-    entidad: getSelectValues("filtro-entidad"),
-    anio: getSelectValues("filtro-anio"),
-    mes: getSelectValues("filtro-mes"),
-    linea: getSelectValues("filtro-linea"),
-    etapa: getSelectValues("filtro-etapa"),
-    operativo: getSelectValues("filtro-operativo"),
-    oficina: getSelectValues("filtro-oficina"),
-
-    // simples
-    resultado: ($("filtro-resultado")?.value || ""),
-    coordinador: ($("filtro-coordinador")?.value || ""),
-    ejecutivo: ($("filtro-ejecutivo")?.value || ""),
-  };
-}
-
-function restaurarFiltrosGuardados(filtros) {
-  if (!filtros) return;
-
-  if (inputBuscarCreditos) inputBuscarCreditos.value = filtros.texto || "";
-  if (inputCedulaNumero) inputCedulaNumero.value = filtros.cedula || "";
-
-  setSelectValues("filtro-entidad", filtros.entidad || []);
-  setSelectValues("filtro-anio", filtros.anio || []);
-  setSelectValues("filtro-mes", filtros.mes || []);
-  setSelectValues("filtro-linea", filtros.linea || []);
-  setSelectValues("filtro-etapa", filtros.etapa || []);
-  setSelectValues("filtro-operativo", filtros.operativo || []);
-  setSelectValues("filtro-oficina", filtros.oficina || []);
-
-  const r = $("filtro-resultado"); if (r) r.value = filtros.resultado || "";
-  const c = $("filtro-coordinador"); if (c) c.value = filtros.coordinador || "";
-  const e = $("filtro-ejecutivo"); if (e) e.value = filtros.ejecutivo || "";
-}
-
-function guardarFiltrosEnMemoria() {
-  try {
-    const filtros = obtenerFiltrosActuales();
-    // SafeStore existe arriba en tu script; si por alguna razón no está, cae a localStorage
-    if (typeof SafeStore !== "undefined" && SafeStore?.set) SafeStore.set(FILTERS_KEY, JSON.stringify(filtros));
-    else localStorage.setItem(FILTERS_KEY, JSON.stringify(filtros));
-  } catch (err) {
-    console.warn("⚠️ No se pudieron guardar filtros:", err);
-  }
-}
-
-function cargarFiltrosDesdeMemoria() {
-  try {
-    const raw =
-      (typeof SafeStore !== "undefined" && SafeStore?.get)
-        ? SafeStore.get(FILTERS_KEY)
-        : localStorage.getItem(FILTERS_KEY);
-
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch (err) {
-    console.warn("⚠️ No se pudieron leer filtros guardados:", err);
-    return null;
-  }
-}
-
-function limpiarMemoriaFiltros() {
-  try {
-    if (typeof SafeStore !== "undefined" && SafeStore?.del) SafeStore.del(FILTERS_KEY);
-    else localStorage.removeItem(FILTERS_KEY);
-  } catch (err) {
-    // ignore
-  }
-}
-
-// ============================================================
-// 🧩 FUNCIÓN PRINCIPAL: Aplica todos los filtros combinados
-//     ✅ Soporta selects multiple usando .in()
-// ============================================================
-async function aplicarFiltrosCreditos() {
-  const filtroTexto = (inputBuscarCreditos?.value || "").trim();
-  const filtroCedulaNumero = (inputCedulaNumero?.value || "").trim();
-
-  const entidades = getSelectValues("filtro-entidad");
-  const anios = getSelectValues("filtro-anio");
-  const meses = getSelectValues("filtro-mes");
-  const lineas = getSelectValues("filtro-linea");
-  const etapas = getSelectValues("filtro-etapa");
-  const operativos = getSelectValues("filtro-operativo");
-  const oficinas = getSelectValues("filtro-oficina");
-
-  const resultado = ($("filtro-resultado")?.value || "").trim();
-  const coordinador = ($("filtro-coordinador")?.value || "").trim();
-  const ejecutivo = ($("filtro-ejecutivo")?.value || "").trim();
-
-  let query = supabaseClient
-    .from("creditos_radicados")
-    .select("*")
-    .order("fecha", { ascending: false });
-
-  // 🔍 texto libre
-  if (filtroTexto) {
-    query = query.or(
-      `numero_credito.ilike.%${filtroTexto}%,cedula.ilike.%${filtroTexto}%`
-    );
-  }
-
-  // 🔍 cédula / número dedicado
-  if (filtroCedulaNumero) {
-    query = query.or(
-      `numero_credito.ilike.%${filtroCedulaNumero}%,cedula.ilike.%${filtroCedulaNumero}%`
-    );
-  }
-
-  // ✅ multi-selects
-  if (entidades.length) query = query.in("entidad", entidades);
-  if (anios.length) query = query.in("anio", anios);
-  if (meses.length) query = query.in("mes", meses);
-  if (lineas.length) query = query.in("linea", lineas);
-
-  if (etapas.length) {
-    const etapasNormales = etapas
-      .filter((e) => e !== "__VACIO__")
-      .map((e) => String(e).trim())
-      .filter(Boolean);
-
-    const incluirVacio = etapas.includes("__VACIO__");
-
-    if (etapasNormales.length && incluirVacio) {
-      const lista = etapasNormales.map((e) => `"${e}"`).join(",");
-      query = query.or(`etapa.in.(${lista}),etapa.is.null,etapa.eq.""`);
-    } else if (etapasNormales.length) {
-      query = query.in("etapa", etapasNormales);
-    } else if (incluirVacio) {
-      query = query.or('etapa.is.null,etapa.eq.""');
-    }
-  }
-
-  if (operativos.length) query = query.in("operativo", operativos);
-  if (oficinas.length) query = query.in("oficina", oficinas);
-
-  // ✅ simples
-  if (resultado) query = query.eq("resultado_consulta", resultado);
-  if (coordinador) query = query.eq("coordinador", coordinador);
-  if (ejecutivo) query = query.eq("ejecutivo_comercial", ejecutivo);
-
-  try {
-    const { data, error } = await query;
-
-    if (error) {
-      console.error("❌ Error al aplicar filtros:", error);
-      return;
-    }
-
-    if (!data || data.length === 0) {
-      if (tbodyCreditos) tbodyCreditos.innerHTML = "";
-      noSolicitudesCreditos?.classList.remove("hidden");
-      actualizarTotalesCreditos([]);
-    } else {
-      noSolicitudesCreditos?.classList.add("hidden");
-      if (tbodyCreditos) {
-        tbodyCreditos.innerHTML = data.map((c) => renderFilaCredito(c)).join("");
-      }
-      actualizarTotalesCreditos(data);
-    }
-  } catch (err) {
-    console.error("⚠️ Error ejecutando filtros de créditos:", err);
-  }
-}
-
-// ============================================================
-// ⌨️ BUSCADORES EN TIEMPO REAL
-// ============================================================
-if (inputBuscarCreditos) {
-  inputBuscarCreditos.addEventListener("input", () => {
-    guardarFiltrosEnMemoria();
-    aplicarFiltrosCreditos();
-  });
-}
-if (inputCedulaNumero) {
-  inputCedulaNumero.addEventListener("input", () => {
-    guardarFiltrosEnMemoria();
-    aplicarFiltrosCreditos();
-  });
-}
-
-// initCreditosMultiSelects(); // moved to init block after dynamic option filling
-
-// ============================================================
-// 🎯 Escucha cambios en los selects de filtros
-// ============================================================
-if (filtrosSelects.length > 0) {
-  filtrosSelects.forEach((filtro) => {
-    filtro.addEventListener("change", () => {
-      guardarFiltrosEnMemoria();
-      aplicarFiltrosCreditos();
-    });
-  });
-}
-
-// ============================================================
-// 🧹 BOTÓN LIMPIAR FILTROS (limpia multiple correctamente)
-// ============================================================
-const btnLimpiar = document.createElement("button");
-btnLimpiar.innerHTML = "🧹 <span class='ml-1'>Limpiar Filtros</span>";
-btnLimpiar.type = "button";
-btnLimpiar.className =
-  "bg-gray-200 hover:bg-gray-300 text-gray-800 px-4 py-2 rounded-lg text-sm font-semibold transition flex items-center gap-2";
-
-btnLimpiar.addEventListener("click", async () => {
-  document
-    .querySelectorAll("#filtros-creditos select")
-    .forEach((sel) => clearSelect(sel));
-
-  if (inputBuscarCreditos) inputBuscarCreditos.value = "";
-  if (inputCedulaNumero) inputCedulaNumero.value = "";
-
-  limpiarMemoriaFiltros();
-
-  await aplicarFiltrosCreditos();
-  mostrarMensaje(null, "exito", "Filtros limpiados correctamente.");
-});
-
-$("filtros-creditos")?.appendChild(btnLimpiar);
-
-// ============================================================
-// 👔 LLENAR EJECUTIVOS, ETAPAS, OFICINAS Y COORDINADORES DINÁMICAMENTE
-// ============================================================
-
-// Traer todos los ejecutivos desde la BD por páginas
-async function traerEjecutivosBDTodos() {
-  const PAGE = 1000;
-  let from = 0;
-  const ejecutivos = [];
-
-  while (true) {
-    const { data, error } = await supabaseClient
-      .from("creditos_radicados")
-      .select("ejecutivo_comercial")
-      .range(from, from + PAGE - 1);
-
-    if (error) throw error;
-    if (!data || data.length === 0) break;
-
-    for (const row of data) {
-      ejecutivos.push(row.ejecutivo_comercial);
-    }
-
-    if (data.length < PAGE) break;
-    from += PAGE;
-  }
-
-  return ejecutivos;
-}
-
-async function llenarEjecutivosFiltro() {
-  const filtroEjecutivo = $("filtro-ejecutivo");
-  if (!filtroEjecutivo) return;
-
-  try {
-    const ejecutivosBD = await traerEjecutivosBDTodos();
-
-    const ejecutivosUnicos = [
-      ...new Set(
-        ejecutivosBD
-          .map((e) => String(e ?? "").trim()) // quita null, undefined y espacios
-          .filter(Boolean) // elimina vacíos
-      ),
-    ].sort((a, b) => a.localeCompare(b, "es", { sensitivity: "base" }));
-
-    filtroEjecutivo.innerHTML = `<option value="">Todos</option>`;
-
-    ejecutivosUnicos.forEach((nombre) => {
-      const opt = document.createElement("option");
-      opt.value = nombre;
-      opt.textContent = nombre;
-      filtroEjecutivo.appendChild(opt);
-    });
-
-    // Si usas TomSelect
-    if (filtroEjecutivo.tomselect) {
-      const ts = filtroEjecutivo.tomselect;
-      ts.clear(true);
-      ts.clearOptions();
-
-      ts.addOption({ value: "", text: "Todos" });
-
-      ejecutivosUnicos.forEach((nombre) => {
-        ts.addOption({ value: nombre, text: nombre });
-      });
-
-      ts.refreshOptions(false);
-    }
-  } catch (err) {
-    console.error("Error al llenar ejecutivos:", err);
-  }
-}
-
-async function traerEtapasBDTodas() {
-  const PAGE = 1000;
-  let from = 0;
-  const etapas = [];
-
-  while (true) {
-    const { data, error } = await supabaseClient
-      .from("creditos_radicados")
-      .select("etapa")
-      .range(from, from + PAGE - 1);
-
-    if (error) throw error;
-    if (!data || data.length === 0) break;
-
-    for (const row of data) {
-      etapas.push(row.etapa);
-    }
-
-    if (data.length < PAGE) break;
-    from += PAGE;
-  }
-
-  return etapas;
-}
-
-async function llenarEtapasFiltro() {
-  const filtroEtapa = $("filtro-etapa");
-  if (!filtroEtapa) return;
-
-  try {
-    const etapasBD = await traerEtapasBDTodas();
-
-    const tieneVacios = etapasBD.some((e) => !String(e ?? "").trim());
-
-    const etapasUnicas = [
-      ...new Set(
-        etapasBD
-          .map((e) => String(e ?? "").trim())
-          .filter(Boolean)
-      ),
-    ].sort((a, b) => a.localeCompare(b, "es", { sensitivity: "base" }));
-
-    filtroEtapa.innerHTML = "";
-
-    if (tieneVacios) {
-      const optVacio = document.createElement("option");
-      optVacio.value = "__VACIO__";
-      optVacio.textContent = "(Vacío)";
-      filtroEtapa.appendChild(optVacio);
-    }
-
-    etapasUnicas.forEach((etapa) => {
-      const opt = document.createElement("option");
-      opt.value = etapa;
-      opt.textContent = etapa;
-      filtroEtapa.appendChild(opt);
-    });
-
-    if (filtroEtapa.tomselect) {
-      const ts = filtroEtapa.tomselect;
-      ts.clear(true);
-      ts.clearOptions();
-
-      if (tieneVacios) {
-        ts.addOption({ value: "__VACIO__", text: "(Vacío)" });
-      }
-
-      etapasUnicas.forEach((etapa) => {
-        ts.addOption({ value: etapa, text: etapa });
-      });
-
-      ts.refreshOptions(false);
-    }
-  } catch (err) {
-    console.error("Error al llenar etapas:", err);
-  }
-}
-
-// 🆕 Llenar oficinas dinámicamente
-async function llenarOficinasFiltro() {
-  const filtroOficina = $("filtro-oficina");
-  if (!filtroOficina) return;
-
-  try {
-    const { data, error } = await supabaseClient
-      .from("creditos_radicados")
-      .select("oficina")
-      .not("oficina", "is", null);
-
-    if (error) {
-      console.error("Error cargando oficinas:", error);
-      return;
-    }
-
-    const oficinasUnicas = [
-      ...new Set(
-        data
-          .map((d) => d.oficina?.trim())
-          .filter(Boolean)
-          .map((o) =>
-            o.toLowerCase() === "credibank otros convenios"
-              ? "Credibank Barranquilla"
-              : o
-          )
-      ),
-    ];
-
-    oficinasUnicas.sort((a, b) => a.localeCompare(b, "es", { sensitivity: "base" }));
-    filtroOficina.innerHTML = `<option value="">Todas</option>`;
-
-    oficinasUnicas.forEach((oficina) => {
-      const opt = document.createElement("option");
-      opt.value = oficina;
-      opt.textContent = oficina;
-      filtroOficina.appendChild(opt);
-    });
-  } catch (err) {
-    console.error("Error al llenar oficinas dinámicamente:", err);
-  }
-}
-
-// 🆕 Llenar coordinadores dinámicamente
-async function llenarCoordinadoresFiltro() {
-  const filtroCoordinador = $("filtro-coordinador");
-  if (!filtroCoordinador) return;
-
-  try {
-    const { data, error } = await supabaseClient
-      .from("creditos_radicados")
-      .select("coordinador")
-      .not("coordinador", "is", null);
-
-    if (error) {
-      console.error("Error cargando coordinadores:", error);
-      return;
-    }
-
-    const coordinadoresUnicos = [
-      ...new Set(
-        data.map((d) => String(d.coordinador ?? "").trim()).filter(Boolean)
-      ),
-    ];
-
-    coordinadoresUnicos.sort((a, b) => a.localeCompare(b, "es", { sensitivity: "base" }));
-    filtroCoordinador.innerHTML = `<option value="">Todos</option>`;
-
-    coordinadoresUnicos.forEach((coord) => {
-      const opt = document.createElement("option");
-      opt.value = coord;
-      opt.textContent = coord;
-      filtroCoordinador.appendChild(opt);
-    });
-  } catch (err) {
-    console.error("Error al llenar coordinadores dinámicamente:", err);
-  }
-}
 
 // ============================================================
 // 🚀 Inicialización
