@@ -426,7 +426,7 @@ async function showAdminPanel() {
     if (adminPanel) adminPanel.classList.remove("hidden");
     if (comercialPanel) comercialPanel.classList.add("hidden");
 
-    showAdminContent("creditos");
+    showAdminContent("perfilamiento");
     applyRolePermissions();
 
     // 🟢 Cargar asesores activos para el select
