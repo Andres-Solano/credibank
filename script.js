@@ -2658,12 +2658,10 @@ async function initRealtimeListeners() {
 
         const nueva = payload.new;
 
-        if ([
-          "credivillas",
-          "libranza",
-          "hipotecario",
-          "tarjetas"
-        ].includes(nueva.tipo)) {
+        if (
+          ["credivillas", "libranza", "hipotecario", "tarjetas"]
+            .includes(nueva.tipo)
+        ) {
 
           invalidateTab("perfilamiento");
 
@@ -2674,7 +2672,6 @@ async function initRealtimeListeners() {
       }
     )
     .subscribe();
-
 
   // ---------------- RADICACIÓN ----------------
   supabaseClient
@@ -2702,7 +2699,6 @@ async function initRealtimeListeners() {
     )
     .subscribe();
 
-
   // ---------------- HISTORIAL ----------------
   supabaseClient
     .channel("historial-changes")
@@ -2724,7 +2720,6 @@ async function initRealtimeListeners() {
     )
     .subscribe();
 
-
   // ---------------- ASESORES ----------------
   supabaseClient
     .channel("asesores-changes")
@@ -2737,7 +2732,7 @@ async function initRealtimeListeners() {
       },
       async () => {
 
-        const cedula = $("buscar-cedula")?.value.trim() || "";
+        const cedula = $("buscar-cedula")?.value?.trim() || "";
         const estado = $("filtro-estado")?.value || "";
 
         await cargarAsesores(cedula, estado);
@@ -2745,19 +2740,19 @@ async function initRealtimeListeners() {
     )
     .subscribe();
 
-
   console.log("✅ Realtime limpio funcionando");
 }
-``
 
-// Toggle formulario
-$("btn-toggle-form").addEventListener("click", () => {
-  $("form-perfilamiento").classList.toggle("hidden");
+
+// ---------------- TOGGLE FORMULARIOS ----------------
+
+$("btn-toggle-form")?.addEventListener("click", () => {
+  $("form-perfilamiento")?.classList.toggle("hidden");
 });
 
 $("btn-toggle-form-asesor")?.addEventListener("click", () => {
   $("form-asesor")?.classList.toggle("hidden");
-});
+}); 
 
 function buscarHistorial() {
 
