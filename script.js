@@ -2166,7 +2166,6 @@ if (!isHistory && ["admin","operativo"].includes(userRole)) {
           solicitud.tipo,
           isHistory
         );
-      }
     }
   });
 
